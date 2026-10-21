@@ -2,13 +2,15 @@ import { beforeEach, mock } from "bun:test";
 import { eq } from "drizzle-orm";
 import type { DB } from "../db/client";
 import { users } from "../db/schema";
+import { setTelegramClientForTests } from "../lib/telegram";
 
 /**
  * Keeps every router test off the network. `invoiceLink` and image presigning
  * are faked; rate limiting always allows; no Redis socket is opened.
  *
- * Import this module first, before anything that imports grammY/ioredis or the
- * S3 presigner, so the installed stubs replace those entry points.
+ * Import this module before anything that imports ioredis or the S3 presigner,
+ * so those stubs replace the real clients. Stars invoice calls go through the
+ * replaceable `tg` client, including when bot tests imported grammY first.
  */
 export interface FakeTelegram {
   invoiceLinks: Array<{
@@ -39,22 +41,15 @@ export function resetFakesBeforeEach() {
   });
 }
 
-mock.module("grammy", () => ({
-  Api: class FakeApi {
-    async createInvoiceLink(
-      title: string,
-      description: string,
-      payload: string,
-      _providerToken: string,
-      currency: string,
-      prices: { label: string; amount: number }[],
-    ) {
-      if (fakeTelegram.failInvoiceLink) throw fakeTelegram.failInvoiceLink;
-      fakeTelegram.invoiceLinks.push({ title, description, payload, currency, prices });
-      return `https://t.me/invoice/${payload}`;
-    }
+// Replace the live client. Mocking the `grammy` module does not work once the
+// bot tests have imported the real package, and a full module mock removes `Bot`.
+setTelegramClientForTests({
+  async createInvoiceLink(title, description, payload, _providerToken, currency, prices) {
+    if (fakeTelegram.failInvoiceLink) throw fakeTelegram.failInvoiceLink;
+    fakeTelegram.invoiceLinks.push({ title, description, payload, currency, prices });
+    return `https://t.me/invoice/${payload}`;
   },
-}));
+});
 
 mock.module("ioredis", () => ({
   default: class FakeRedis {

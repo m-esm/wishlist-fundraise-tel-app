@@ -1,6 +1,6 @@
 import { autoRetry } from "@grammyjs/auto-retry";
 import { eq } from "drizzle-orm";
-import { Bot } from "grammy";
+import { Bot, BotError, webhookCallback } from "grammy";
 import { db } from "../db/client";
 import { users } from "../db/schema";
 import { env } from "../env";
@@ -35,16 +35,38 @@ export function createBot() {
 
   bot.catch((err) => {
     console.error(`update ${err.ctx.update.update_id} failed:`, err.error);
-    // Re-throw payment failures so the webhook returns 500 and Telegram redelivers.
-    if (err.ctx.message?.successful_payment) throw err.error;
+    // Long polling is the only caller. Rethrowing stops bot.start().
+    // Webhook requests do not come through here. createWebhookHandler turns
+    // the same handler failure into HTTP 500 so Telegram redelivers.
   });
   return bot;
+}
+
+/**
+ * Secret-token check plus update dispatch.
+ * A bad secret is 401. A handler failure is 500 so Telegram redelivers the payment.
+ */
+export function createWebhookHandler(bot: Bot<BotContext>, secretToken: string | undefined) {
+  const handle = webhookCallback(bot, "std/http", { secretToken, timeoutMilliseconds: 9_000 });
+  return async (req: Request): Promise<Response> => {
+    try {
+      return await handle(req);
+    } catch (err) {
+      const updateId = err instanceof BotError ? err.ctx.update.update_id : "?";
+      const cause = err instanceof BotError ? err.error : err;
+      const detail = cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
+      console.error(`webhook update ${updateId} failed: ${detail}`);
+      return new Response("error", { status: 500 });
+    }
+  };
 }
 
 /** Command menus per scope (shown in the Telegram "/" picker). */
 export async function registerCommands(bot: Bot<BotContext>) {
   await bot.api.setMyCommands(
     [
+      { command: "start", description: "Welcome and open wishlists" },
+      { command: "terms", description: "Terms of service" },
       { command: "app", description: "Open my wishlists" },
       { command: "mylists", description: "List my wishlists" },
       { command: "requests", description: "Follow requests" },
@@ -61,6 +83,7 @@ export async function registerCommands(bot: Bot<BotContext>) {
       { command: "status", description: "Show group gift progress" },
       { command: "contribute", description: "Chip in Stars: /contribute 100" },
       { command: "close", description: "Close the group gift" },
+      { command: "cancel", description: "Cancel or close the group gift" },
       { command: "help", description: "How group gifts work" },
     ],
     { scope: { type: "all_group_chats" } },
