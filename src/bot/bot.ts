@@ -35,9 +35,9 @@ export function createBot() {
 
   bot.catch((err) => {
     console.error(`update ${err.ctx.update.update_id} failed:`, err.error);
-    // Long polling is the only caller. Rethrowing stops bot.start().
-    // Webhook requests do not come through here. createWebhookHandler turns
-    // the same handler failure into HTTP 500 so Telegram redelivers.
+    // Log only. Polling calls this handler, and a rethrow ends bot.start().
+    // Webhook updates do not use this handler. handleUpdate throws on its own,
+    // and createWebhookHandler turns that into HTTP 500 so Telegram redelivers.
   });
   return bot;
 }
