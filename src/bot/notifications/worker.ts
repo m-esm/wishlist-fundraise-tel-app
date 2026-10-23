@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { GrammyError, InlineKeyboard, type Api } from "grammy";
 import { db } from "../../db/client";
 import { contributions, groupSessions, notificationOutbox, products, users } from "../../db/schema";
@@ -32,12 +32,12 @@ async function claim(): Promise<Row[]> {
       order by id limit ${env.OUTBOX_BATCH_SIZE}
       for update skip locked)
     returning id, kind, user_id as "userId", chat_id as "chatId", payload, attempts`);
-  return rows as unknown as Row[];
+  return (Array.isArray(rows) ? rows : (rows as unknown as { rows: Row[] }).rows) as Row[];
 }
 
 async function settle(id: number, outcome: { ok: true } | { ok: false; error: string; retryInSec?: number; final?: boolean }, attempts: number) {
   if (outcome.ok) {
-    await db.update(notificationOutbox).set({ status: "sent", sentAt: new Date() }).where(eq(notificationOutbox.id, id));
+    await db.update(notificationOutbox).set({ status: "sent", sentAt: new Date() }).where(and(eq(notificationOutbox.id, id), eq(notificationOutbox.status, "pending"), eq(notificationOutbox.attempts, attempts)));
     return;
   }
   const final = outcome.final || attempts >= env.OUTBOX_MAX_ATTEMPTS;
@@ -49,7 +49,7 @@ async function settle(id: number, outcome: { ok: true } | { ok: false; error: st
       lastError: outcome.error.slice(0, 500),
       nextAttemptAt: sql`now() + make_interval(secs => ${backoff})`,
     })
-    .where(eq(notificationOutbox.id, id));
+    .where(and(eq(notificationOutbox.id, id), eq(notificationOutbox.status, "pending"), eq(notificationOutbox.attempts, attempts)));
 }
 
 async function contributionInfo(contributionId: string) {
@@ -150,38 +150,41 @@ async function deliver(api: Api, row: Row): Promise<void> {
   }
 }
 
+/** One bounded pass, also used by offline smoke tests. */
+export async function processOutboxBatch(api: Api): Promise<number> {
+  const rows = await claim();
+  for (const row of rows) {
+    try {
+      await deliver(api, row);
+      await settle(row.id, { ok: true }, row.attempts);
+    } catch (e) {
+      if (e instanceof GrammyError && e.error_code === 403) {
+        if (row.userId) await db.update(users).set({ canDm: false }).where(eq(users.id, row.userId));
+        if (row.chatId) await db.update(groupSessions).set({ progressMessageId: null }).where(eq(groupSessions.telegramChatId, row.chatId));
+        await settle(row.id, { ok: false, error: e.description, final: true }, row.attempts);
+      } else if (e instanceof GrammyError && e.error_code === 429) {
+        await settle(row.id, { ok: false, error: e.description, retryInSec: e.parameters.retry_after ?? 5 }, row.attempts);
+      } else {
+        await settle(row.id, { ok: false, error: String(e) }, row.attempts);
+      }
+    }
+  }
+  return rows.length;
+}
+
 export function startOutboxWorker(api: Api): () => void {
   let stopped = false;
   const loop = async () => {
     while (!stopped) {
-      let rows: Row[] = [];
+      let count = 0;
       try {
-        rows = await claim();
-        for (const row of rows) {
-          try {
-            await deliver(api, row);
-            await settle(row.id, { ok: true }, row.attempts);
-          } catch (e) {
-            if (e instanceof GrammyError && e.error_code === 403) {
-              // User blocked the bot / bot removed from group: stop trying.
-              if (row.userId) await db.update(users).set({ canDm: false }).where(eq(users.id, row.userId));
-              if (row.chatId) await db.update(groupSessions).set({ progressMessageId: null }).where(eq(groupSessions.telegramChatId, row.chatId));
-              await settle(row.id, { ok: false, error: e.description, final: true }, row.attempts);
-            } else if (e instanceof GrammyError && e.error_code === 429) {
-              await settle(row.id, { ok: false, error: e.description, retryInSec: e.parameters.retry_after ?? 5 }, row.attempts);
-            } else {
-              await settle(row.id, { ok: false, error: String(e) }, row.attempts);
-            }
-          }
-        }
+        count = await processOutboxBatch(api);
       } catch (e) {
         console.error("outbox loop error", e);
       }
-      if (rows.length < env.OUTBOX_BATCH_SIZE) await Bun.sleep(env.OUTBOX_POLL_INTERVAL_MS);
+      if (count < env.OUTBOX_BATCH_SIZE) await Bun.sleep(env.OUTBOX_POLL_INTERVAL_MS);
     }
   };
   void loop();
-  return () => {
-    stopped = true;
-  };
+  return () => { stopped = true; };
 }

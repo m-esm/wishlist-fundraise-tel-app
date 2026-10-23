@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { InlineKeyboard } from "grammy";
 import type { Executor } from "../db/client";
 import { contributions, groupSessionVotes, groupSessions, products, users, type GroupSession } from "../db/schema";
@@ -27,7 +27,7 @@ export const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<
 /** Voting message: numbered candidates with live vote counts. */
 export async function renderVoting(db: Executor, s: GroupSession) {
   const [beneficiary] = await db.select().from(users).where(eq(users.id, s.beneficiaryId));
-  const items = await db.select().from(products).where(sql`${products.id} = any(${s.candidateProductIds})`);
+  const items = await db.select().from(products).where(inArray(products.id, s.candidateProductIds));
   const votes = await db
     .select({ productId: groupSessionVotes.productId, n: sql<number>`count(*)::int` })
     .from(groupSessionVotes)

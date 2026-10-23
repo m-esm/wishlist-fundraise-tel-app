@@ -1,8 +1,33 @@
 import { Api } from "grammy";
 import { env } from "../env";
 
+/**
+ * Invoice client used by the API. Tests replace it so a bot suite that has
+ * already imported real grammY cannot leave `createInvoiceLink` pointed at Telegram.
+ */
+export type InvoiceLinkClient = {
+  createInvoiceLink: (
+    title: string,
+    description: string,
+    payload: string,
+    providerToken: string,
+    currency: string,
+    prices: { label: string; amount: number }[],
+    other?: { photo_url?: string },
+  ) => Promise<string>;
+};
+
+let invoiceClient: InvoiceLinkClient = new Api(env.BOT_TOKEN);
+
+/** Test hook. Production code does not call this. */
+export function setTelegramClientForTests(client: InvoiceLinkClient) {
+  invoiceClient = client;
+}
+
 /** Bot API client usable from any process (no update handling). */
-export const tg = new Api(env.BOT_TOKEN);
+export const tg: InvoiceLinkClient = {
+  createInvoiceLink: (...args) => invoiceClient.createInvoiceLink(...args),
+};
 
 /** https://t.me/<bot>/<app>?startapp=<param> — opens the Mini App in any chat type. */
 export function miniAppLink(startParam?: string): string {
