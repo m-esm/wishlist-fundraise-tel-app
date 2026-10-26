@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { and, eq } from "drizzle-orm";
 import { follows, notificationOutbox, users, wishlists } from "../../db/schema";
 import { fixture, user } from "../../test/fixtures";
-import { resetFakesBeforeEach } from "../../test/net";
+import { makeCaller, resetFakesBeforeEach } from "../../test/net";
 
 resetFakesBeforeEach();
 
@@ -46,6 +46,39 @@ describe("follows router", () => {
     expect(await f.strangerCaller.follows.follow({ userId: target.id })).toEqual({ status: "pending" });
     expect((await followRow(f.db, f.stranger.id, target.id))!.status).toBe("rejected");
     expect(await f.db.select().from(notificationOutbox)).toEqual([]);
+  });
+
+  test("a rejected request stays rejected through cancel and a later follow", async () => {
+    const f = await fixture();
+    const target = await user(f.db, { firstName: "Refuser" });
+    await f.strangerCaller.follows.follow({ userId: target.id });
+    expect((await followRow(f.db, f.stranger.id, target.id))!.status).toBe("pending");
+    // The target owns the request, so the target declines it.
+    const targetCaller = await makeCaller(f.db, target);
+    expect(await targetCaller.follows.respond({ followerId: f.stranger.id, accept: false })).toEqual({
+      status: "rejected",
+    });
+    expect((await followRow(f.db, f.stranger.id, target.id))!.status).toBe("rejected");
+    // The client shows "Cancel follow request" for a rejected edge.
+    expect(await f.strangerCaller.follows.unfollow({ userId: target.id })).toEqual({ ok: true });
+    // The rejection is preserved, so cancel does not erase the owner's answer.
+    expect((await followRow(f.db, f.stranger.id, target.id))!.status).toBe("rejected");
+    // A later request stays quiet: still rejected, and no new DM.
+    expect(await f.strangerCaller.follows.follow({ userId: target.id })).toEqual({ status: "pending" });
+    expect((await followRow(f.db, f.stranger.id, target.id))!.status).toBe("rejected");
+    // Only the first request sent a DM. Cancel and the later request send none.
+    const outbox = await f.db.select().from(notificationOutbox);
+    expect(outbox.map((o) => o.kind)).toEqual(["follow_request"]);
+  });
+
+  test("unfollow after acceptance removes the edge and the counts", async () => {
+    const f = await fixture();
+    expect((await f.friendCaller.users.profile({ userId: f.owner.id })).followStatus).toBe("accepted");
+    expect(await f.friendCaller.follows.unfollow({ userId: f.owner.id })).toEqual({ ok: true });
+    expect(await followRow(f.db, f.friend.id, f.owner.id)).toBeUndefined();
+    const after = await f.friendCaller.users.profile({ userId: f.owner.id });
+    expect(after.followStatus).toBeNull();
+    expect(after.counts.followers).toBe(0);
   });
 
   test("cannot follow yourself or an unknown user", async () => {

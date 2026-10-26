@@ -86,7 +86,9 @@ export const usersRouter = router({
       return {
         user: u,
         isMe: u.id === ctx.user.id,
-        followStatus: outgoing?.s ?? null, // viewer -> user
+        // viewer -> user. A rejected request is reported as "pending" so the
+        // client cannot reveal that a rejection happened (see follows.follow).
+        followStatus: outgoing?.s === "rejected" ? ("pending" as const) : outgoing?.s ?? null,
         followsMe: incoming?.s === "accepted",
         counts: { followers: followers?.n ?? 0, following: following?.n ?? 0, wishlists: lists?.n ?? 0 },
       };

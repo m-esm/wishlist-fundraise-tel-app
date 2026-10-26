@@ -83,6 +83,16 @@ describe("users router", () => {
     expect(res.followsMe).toBe(true);
   });
 
+  test("profile reports a rejected request as pending", async () => {
+    const f = await fixture();
+    const other = await user(f.db, { firstName: "Other", username: "other" });
+    await f.db.insert(follows).values({ followerId: f.owner.id, followeeId: other.id, status: "rejected" });
+    // follows.follow hides the rejection: it returns "pending" and stays quiet.
+    expect(await f.ownerCaller.follows.follow({ userId: other.id })).toEqual({ status: "pending" });
+    const res = await f.ownerCaller.users.profile({ userId: other.id });
+    expect(res.followStatus).toBe("pending");
+  });
+
   test("profile for an unknown user is NOT_FOUND", async () => {
     const f = await fixture();
     await expect(f.ownerCaller.users.profile({ username: "nobody" })).rejects.toMatchObject({ code: "NOT_FOUND" });
