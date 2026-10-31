@@ -4,12 +4,14 @@ import { contributionsRouter } from "./contributions";
 import { followsRouter } from "./follows";
 import { groupSessionsRouter } from "./group-sessions";
 import { productsRouter } from "./products";
+import { subscriptionsRouter } from "./subscriptions";
 import { usersRouter } from "./users";
 import { wishlistsRouter } from "./wishlists";
 
 export const appRouter = router({
   auth: authRouter,
   users: usersRouter,
+  subscriptions: subscriptionsRouter,
   wishlists: wishlistsRouter,
   products: productsRouter,
   follows: followsRouter,

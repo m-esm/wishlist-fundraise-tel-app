@@ -21,6 +21,11 @@ const openApp = (label: string, param?: string) => new InlineKeyboard().url(labe
  */
 cmd.command("start", async (ctx) => {
   const param = parseStartParam(ctx.match);
+  if (param?.kind === "premium") {
+    return ctx.reply("Review Premium in the app. There is no separate command for it.", {
+      reply_markup: openApp("Review Premium", "premium"),
+    });
+  }
   if (param) {
     return ctx.reply("Tap to open:", { reply_markup: openApp("🎁 Open", ctx.match) });
   }

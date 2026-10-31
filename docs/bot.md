@@ -14,7 +14,7 @@ needs the commands addressed to it.
 
 | Command | What it does |
 |---|---|
-| `/start [param]` | Welcome + "Open" button. `param` = `u_<userId>` / `w_<wishlistId>` / `p_<productId>` / `s_<sessionId>` opens the Mini App at that screen. Any DM sets `users.can_dm = true`. |
+| `/start [param]` | Welcome + "Open" button. `param` = `u_<userId>` / `w_<wishlistId>` / `p_<productId>` / `s_<sessionId>` opens the Mini App at that screen. `premium` opens the upgrade screen. There is no `/premium` command. Any DM sets `users.can_dm = true`. |
 | `/app` | Button that opens the Mini App |
 | `/mylists` | My lists with funded/total counts; each button opens the list |
 | `/requests` | Pending follow requests with ✅ Accept / ❌ Decline |

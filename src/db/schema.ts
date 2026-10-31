@@ -318,9 +318,10 @@ export const notificationOutbox = pgTable(
 // ---------------------------------------------------------------- subscriptions
 
 /**
- * One row per user who ever had premium. No row = free. Limits per plan live
- * in src/lib/entitlements.ts. The purchase flow (Stars subscription invoice)
- * is still an open product decision.
+ * One row per user who ever had premium. No row = free, and a trial is still
+ * available. A row with `expires_at` null is lifetime. Limits and the €12.50
+ * price live in src/lib/entitlements.ts. Stars checkout is
+ * src/services/subscriptions.ts.
  */
 export const subscriptions = pgTable(
   "subscriptions",

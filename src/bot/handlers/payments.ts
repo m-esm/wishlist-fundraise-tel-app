@@ -10,12 +10,19 @@ import {
   recordStarsRefund,
   validatePreCheckout,
 } from "../../services/contributions";
+import {
+  parseSubscriptionPayload,
+  recordSubscriptionPayment,
+  refundSubscription,
+  validateSubscriptionPreCheckout,
+} from "../../services/subscriptions";
 import type { BotContext } from "../context";
 
 /**
  * Telegram Stars (XTR) payment lifecycle:
  *
- *   sendInvoice / createInvoiceLink  (payload "c:<contributionId>" or "s:<sessionId>")
+ *   sendInvoice / createInvoiceLink
+ *     payload "c:<contributionId>", "s:<sessionId>", or "m:<userId>:a|l:<stars>"
  *     -> pre_checkout_query           validate, answer within 10 s
  *     -> message.successful_payment   credit (idempotent on telegram_payment_charge_id)
  *     -> message.refunded_payment     reverse credit
@@ -24,7 +31,10 @@ export const payments = new Composer<BotContext>();
 
 payments.on("pre_checkout_query", async (ctx) => {
   const q = ctx.preCheckoutQuery;
-  const error = await validatePreCheckout(db, q.invoice_payload, q.currency, q.total_amount).catch((e) => {
+  const error = await (parseSubscriptionPayload(q.invoice_payload)
+    ? validateSubscriptionPreCheckout(db, q.invoice_payload, q.currency, q.total_amount, q.from.id)
+    : validatePreCheckout(db, q.invoice_payload, q.currency, q.total_amount)
+  ).catch((e) => {
     console.error("pre_checkout validation failed", e);
     return "Temporary error, please try again.";
   });
@@ -35,6 +45,16 @@ payments.on("message:successful_payment", async (ctx) => {
   const p = ctx.message.successful_payment;
   if (p.currency !== STARS) return;
   // Throwing makes grammY return non-200 so Telegram redelivers; the handler is idempotent.
+  if (parseSubscriptionPayload(p.invoice_payload)) {
+    await recordSubscriptionPayment(db, {
+      payload: p.invoice_payload,
+      from: ctx.from,
+      totalAmount: p.total_amount,
+      telegramPaymentChargeId: p.telegram_payment_charge_id,
+    });
+    if (ctx.chat.type === "private") await ctx.reply("Thank you! Premium is confirmed.");
+    return;
+  }
   await recordStarsPayment(db, {
     payload: p.invoice_payload,
     from: ctx.from,
@@ -49,7 +69,9 @@ payments.on("message:successful_payment", async (ctx) => {
 });
 
 payments.on("message:refunded_payment", async (ctx) => {
-  await recordStarsRefund(db, ctx.message.refunded_payment.telegram_payment_charge_id);
+  const chargeId = ctx.message.refunded_payment.telegram_payment_charge_id;
+  if (await refundSubscription(db, chargeId)) return;
+  await recordStarsRefund(db, chargeId);
 });
 
 /**

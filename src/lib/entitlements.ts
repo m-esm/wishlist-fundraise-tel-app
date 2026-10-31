@@ -6,12 +6,25 @@ import { products, subscriptions, wishlists } from "../db/schema";
 /**
  * Plan limits (user decision on MOSA-39):
  *   free:    1 public + 1 private wishlist, 5 products per wishlist
- *   premium: unlimited (exact premium limits and pricing still to be decided)
+ *   premium: unlimited
+ *
+ * Premium price (board decision): €12.50 once, converted to Telegram Stars at
+ * checkout with STARS_RATES.EUR. Annual access lasts ANNUAL_DAYS. Lifetime
+ * access has no expiry. The first activation can be a TRIAL_DAYS trial with
+ * no invoice. There is no /premium bot command.
  *
  * Archived lists and archived products do not count. Going back to free after
  * premium never deletes data: existing items stay readable, only creating new
  * ones over the limit is blocked.
  */
+
+/** First Premium activation, with no Stars invoice. One trial per user. */
+export const TRIAL_DAYS = 30;
+/** Length of a paid annual Premium term. */
+export const ANNUAL_DAYS = 365;
+/** €12.50 in euro minor units. Stars are derived at checkout, not stored here. */
+export const PREMIUM_PRICE_MINOR = 1250;
+export const PREMIUM_PRICE_CURRENCY = "EUR";
 export const PLAN_LIMITS = {
   free: { publicWishlists: 1, privateWishlists: 1, productsPerWishlist: 5 },
   premium: { publicWishlists: Infinity, privateWishlists: Infinity, productsPerWishlist: Infinity },
