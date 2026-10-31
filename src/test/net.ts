@@ -26,15 +26,12 @@ export interface FakeTelegram {
 
 export const fakeTelegram: FakeTelegram = { invoiceLinks: [] };
 
-let beforeEachInstalled = false;
-
 /**
- * Clear captured network fakes before each test. Call once at the top level of
- * a router test file (bun runs all files in one process).
+ * Clear captured network fakes before each test in the calling file.
+ * Register from every router test file. One shared hook would run only for the
+ * first file, and later files would see another file's invoice links.
  */
 export function resetFakesBeforeEach() {
-  if (beforeEachInstalled) return;
-  beforeEachInstalled = true;
   beforeEach(() => {
     fakeTelegram.invoiceLinks.length = 0;
     fakeTelegram.failInvoiceLink = undefined;

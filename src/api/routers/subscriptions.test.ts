@@ -1,7 +1,7 @@
 import "../../test/net";
 import { describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
-import { subscriptions } from "../../db/schema";
+import { subscriptionPayments, subscriptions, users } from "../../db/schema";
 import { planOf } from "../../lib/entitlements";
 import { minorToStars } from "../../lib/money";
 import {
@@ -104,7 +104,79 @@ describe("subscriptions router", () => {
     });
 
     expect(await refundSubscription(f.db, "life-1")).toBe(true);
-    expect(await planOf(f.db, f.owner.id)).toBe("free");
+    const afterLifeRefund = await f.ownerCaller.subscriptions.getStatus();
+    expect(afterLifeRefund.lifetime).toBe(false);
+    expect(afterLifeRefund.plan).toBe("premium");
+    expect(await refundSubscription(f.db, "annual-1")).toBe(true);
+    const [restored] = await f.db.select().from(subscriptions).where(eq(subscriptions.userId, f.owner.id));
+    expect(restored!.expiresAt!.getTime()).toBe(trial!.expiresAt!.getTime());
+    expect(await planOf(f.db, f.owner.id)).toBe("premium");
     expect(await refundSubscription(f.db, "missing")).toBe(false);
+  });
+
+  test("a second charge keeps its own row, redelivery does not duplicate it, and a refund of the first charge still resolves", async () => {
+    const f = await fixture();
+    const annual = await f.ownerCaller.subscriptions.purchaseAnnual();
+    const payload = annual.invoiceLink.replace("https://t.me/invoice/", "");
+    const from = { id: f.owner.telegramId, first_name: f.owner.firstName };
+    await recordSubscriptionPayment(f.db, {
+      payload,
+      from,
+      totalAmount: STARS,
+      telegramPaymentChargeId: "annual-1",
+    });
+    const [firstTerm] = await f.db.select().from(subscriptions).where(eq(subscriptions.userId, f.owner.id));
+    await recordSubscriptionPayment(f.db, {
+      payload,
+      from,
+      totalAmount: STARS,
+      telegramPaymentChargeId: "annual-1",
+    });
+    expect(await f.db.select().from(subscriptionPayments)).toHaveLength(1);
+    const [afterRedelivery] = await f.db.select().from(subscriptions).where(eq(subscriptions.userId, f.owner.id));
+    expect(afterRedelivery!.expiresAt!.getTime()).toBe(firstTerm!.expiresAt!.getTime());
+
+    await recordSubscriptionPayment(f.db, {
+      payload,
+      from,
+      totalAmount: STARS,
+      telegramPaymentChargeId: "annual-2",
+    });
+    const charges = await f.db.select().from(subscriptionPayments);
+    expect(charges.map((row) => row.telegramPaymentChargeId).sort()).toEqual(["annual-1", "annual-2"]);
+    const [extended] = await f.db.select().from(subscriptions).where(eq(subscriptions.userId, f.owner.id));
+    expect(extended!.expiresAt!.getTime() - firstTerm!.expiresAt!.getTime()).toBe(365 * 86_400_000);
+
+    expect(await refundSubscription(f.db, "annual-1")).toBe(true);
+    const [refundedFirst] = await f.db
+      .select()
+      .from(subscriptionPayments)
+      .where(eq(subscriptionPayments.telegramPaymentChargeId, "annual-1"));
+    const [keptSecond] = await f.db
+      .select()
+      .from(subscriptionPayments)
+      .where(eq(subscriptionPayments.telegramPaymentChargeId, "annual-2"));
+    expect(refundedFirst!.refundedAt).not.toBeNull();
+    expect(keptSecond!.refundedAt).toBeNull();
+    const [afterRefund] = await f.db.select().from(subscriptions).where(eq(subscriptions.userId, f.owner.id));
+    expect(afterRefund!.expiresAt!.getTime() - keptSecond!.createdAt.getTime()).toBe(365 * 86_400_000);
+    expect(await planOf(f.db, f.owner.id)).toBe("premium");
+    expect(await refundSubscription(f.db, "annual-1")).toBe(true);
+    expect((await f.db.select().from(subscriptions).where(eq(subscriptions.userId, f.owner.id)))[0]!.expiresAt!.getTime()).toBe(
+      afterRefund!.expiresAt!.getTime(),
+    );
+  });
+
+  test("recording a payment does not write username null", async () => {
+    const f = await fixture();
+    const annual = await f.ownerCaller.subscriptions.purchaseAnnual();
+    await recordSubscriptionPayment(f.db, {
+      payload: annual.invoiceLink.replace("https://t.me/invoice/", ""),
+      from: { id: f.owner.telegramId, first_name: f.owner.firstName },
+      totalAmount: STARS,
+      telegramPaymentChargeId: "annual-name",
+    });
+    const [user] = await f.db.select().from(users).where(eq(users.id, f.owner.id));
+    expect(user!.username).toBe("owner");
   });
 });

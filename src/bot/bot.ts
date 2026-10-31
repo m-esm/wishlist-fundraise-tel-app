@@ -4,7 +4,7 @@ import { Bot, BotError, webhookCallback } from "grammy";
 import { db } from "../db/client";
 import { users } from "../db/schema";
 import { env } from "../env";
-import { upsertTelegramUser } from "../services/users";
+import { findTelegramUser, upsertTelegramUser } from "../services/users";
 import { groupCommands } from "./commands/group";
 import { privateCommands } from "./commands/private";
 import type { BotContext } from "./context";
@@ -18,11 +18,18 @@ export function createBot() {
   bot.api.config.use(autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 10 }));
 
   // Resolve the acting user for every update that has one.
+  // Payment updates only look the user up. An upsert would write username null
+  // when Telegram omits username on the payment.
   bot.use(async (ctx, next) => {
     if (ctx.from && !ctx.from.is_bot) {
-      ctx.dbUser = await upsertTelegramUser(db, ctx.from);
+      const paymentUpdate = Boolean(
+        ctx.preCheckoutQuery || ctx.message?.successful_payment || ctx.message?.refunded_payment,
+      );
+      ctx.dbUser = paymentUpdate
+        ? await findTelegramUser(db, ctx.from.id)
+        : await upsertTelegramUser(db, ctx.from);
       // Any private message means the user has started the bot and can be DMed.
-      if (ctx.chat?.type === "private" && ctx.message && !ctx.dbUser.canDm) {
+      if (ctx.chat?.type === "private" && ctx.message && ctx.dbUser && !ctx.dbUser.canDm) {
         await db.update(users).set({ canDm: true }).where(eq(users.id, ctx.dbUser.id));
         ctx.dbUser.canDm = true;
       }

@@ -83,9 +83,9 @@ link is opened.
 
 | Update | Handler | Effect |
 |---|---|---|
-| `pre_checkout_query` | `handlers/payments.ts` | Checks the payload (`c:<contributionId>` or `s:<sessionId>`), currency `XTR`, amount, and that the product is still `active`. Must answer within 10 s. |
-| `message.successful_payment` | `handlers/payments.ts` | `recordStarsPayment`: idempotent on `telegram_payment_charge_id`, credits the product, queues notifications. On error the webhook returns non-200, so Telegram redelivers. |
-| `message.refunded_payment` | `handlers/payments.ts` | `recordStarsRefund`: reverses the credit; `funded` → `active` if the total drops below the goal |
+| `pre_checkout_query` | `handlers/payments.ts` | Checks a gift payload (`c:<contributionId>` or `s:<sessionId>`) or a Premium payload (`m:<userId>:a\|l:<stars>`). Currency is `XTR`. Must answer within 10 s. Does not upsert the user. |
+| `message.successful_payment` | `handlers/payments.ts` | Credits a gift or confirms Premium. Idempotent on `telegram_payment_charge_id`. Looks the user up by telegram id and does not write `username`. On error the webhook returns non-200, so Telegram redelivers. |
+| `message.refunded_payment` | `handlers/payments.ts` | Refunds that charge. A Premium refund resolves the original charge, including one that is not the latest. A gift refund reverses the credit; `funded` → `active` if the total drops below the goal |
 | `my_chat_member` (private) | `handlers/membership.ts` | user blocked or unblocked the bot → `users.can_dm` |
 | `my_chat_member` (group) | `handlers/membership.ts` | bot added or removed → `telegram_chats`, greeting message |
 | `message.migrate_to_chat_id` | `handlers/membership.ts` | group → supergroup: moves sessions to the new chat id |
