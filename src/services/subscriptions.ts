@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
-import type { DB } from "../db/client";
-import { subscriptions, users, type User } from "../db/schema";
+import type { DB, Tx } from "../db/client";
+import { subscriptionPayments, subscriptions, users, type User } from "../db/schema";
 import { env } from "../env";
 import {
   ANNUAL_DAYS,
@@ -89,7 +89,7 @@ export async function initiateTrial(db: DB, userId: string): Promise<{ expiresAt
       .for("update");
     if (existing) throw new SubscriptionError("CONFLICT", "A free trial is only available once.");
     const expiresAt = new Date(Date.now() + TRIAL_DAYS * DAY_MS);
-    await tx.insert(subscriptions).values({ userId, plan: "premium", expiresAt });
+    await tx.insert(subscriptions).values({ userId, plan: "premium", expiresAt, trialExpiresAt: expiresAt });
     return { expiresAt };
   });
 }
@@ -160,8 +160,62 @@ export interface SubscriptionPayment {
   telegramPaymentChargeId: string;
 }
 
+type LedgerPayment = {
+  term: "annual" | "lifetime";
+  createdAt: Date;
+  refundedAt: Date | null;
+};
+
 /**
- * Confirms a Premium Stars payment. Idempotent on telegram_payment_charge_id.
+ * Current plan from the trial plus charges that are still paid.
+ * A lifetime charge wins. Each annual charge adds ANNUAL_DAYS on top of the
+ * later of its purchase time and the entitlement already granted.
+ * An open-ended grant with no lifetime charge (a manual lifetime row) stays open.
+ */
+function expiryFromLedger(
+  trialExpiresAt: Date | null,
+  openEndedGrant: boolean,
+  payments: LedgerPayment[],
+  now: Date,
+): Date | null {
+  if (openEndedGrant) return null;
+  const active = payments.filter((p) => p.refundedAt == null);
+  if (active.some((p) => p.term === "lifetime")) return null;
+  const annuals = active
+    .filter((p) => p.term === "annual")
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  let cursor = trialExpiresAt;
+  for (const payment of annuals) {
+    const base = cursor && cursor.getTime() > payment.createdAt.getTime() ? cursor : payment.createdAt;
+    cursor = new Date(base.getTime() + ANNUAL_DAYS * DAY_MS);
+  }
+  return cursor ?? now;
+}
+
+async function syncSubscription(tx: Tx, userId: string, now: Date): Promise<void> {
+  const [existing] = await tx.select().from(subscriptions).where(eq(subscriptions.userId, userId)).for("update");
+  const payments = await tx
+    .select({
+      term: subscriptionPayments.term,
+      createdAt: subscriptionPayments.createdAt,
+      refundedAt: subscriptionPayments.refundedAt,
+    })
+    .from(subscriptionPayments)
+    .where(eq(subscriptionPayments.userId, userId));
+  const paidLifetime = payments.some((p) => p.term === "lifetime");
+  const openEndedGrant = existing?.plan === "premium" && existing.expiresAt == null && !paidLifetime;
+  const expiresAt = expiryFromLedger(existing?.trialExpiresAt ?? null, openEndedGrant, payments, now);
+  if (existing) {
+    await tx.update(subscriptions).set({ plan: "premium", expiresAt }).where(eq(subscriptions.id, existing.id));
+    return;
+  }
+  await tx.insert(subscriptions).values({ userId, plan: "premium", expiresAt });
+}
+
+/**
+ * Confirms a Premium Stars payment. One row per charge id.
+ * A redelivery inserts nothing and does not extend Premium again.
+ * The payer is loaded by telegram id. This does not write users.username.
  * Money is already taken, so a redelivery must not throw after the first credit.
  */
 export async function recordSubscriptionPayment(db: DB, pay: SubscriptionPayment): Promise<void> {
@@ -170,60 +224,52 @@ export async function recordSubscriptionPayment(db: DB, pay: SubscriptionPayment
   if (pay.totalAmount !== parsed.stars) throw new SubscriptionError("BAD_REQUEST", "amount mismatch");
 
   await db.transaction(async (tx) => {
-    const [dup] = await tx
-      .select({ id: subscriptions.id })
-      .from(subscriptions)
-      .where(eq(subscriptions.telegramPaymentChargeId, pay.telegramPaymentChargeId));
-    if (dup) return;
-
     const [payer] = await tx.select().from(users).where(eq(users.telegramId, pay.from.id)).for("update");
     if (!payer || payer.id !== parsed.userId) throw new SubscriptionError("BAD_REQUEST", "payer does not match invoice");
 
-    const [existing] = await tx
-      .select()
-      .from(subscriptions)
-      .where(eq(subscriptions.userId, payer.id))
-      .for("update");
-    if (existing?.plan === "premium" && existing.expiresAt == null) {
-      await tx
-        .update(subscriptions)
-        .set({ telegramPaymentChargeId: pay.telegramPaymentChargeId })
-        .where(eq(subscriptions.userId, payer.id));
-      return;
-    }
-
-    const now = new Date();
-    const expiresAt =
-      parsed.term === "lifetime"
-        ? null
-        : new Date((existing?.expiresAt && existing.expiresAt > now ? existing.expiresAt : now).getTime() + ANNUAL_DAYS * DAY_MS);
-
-    if (existing) {
-      await tx
-        .update(subscriptions)
-        .set({ plan: "premium", expiresAt, telegramPaymentChargeId: pay.telegramPaymentChargeId })
-        .where(eq(subscriptions.userId, payer.id));
-    } else {
-      await tx.insert(subscriptions).values({
+    const inserted = await tx
+      .insert(subscriptionPayments)
+      .values({
         userId: payer.id,
-        plan: "premium",
-        expiresAt,
+        term: parsed.term,
+        starsAmount: pay.totalAmount,
         telegramPaymentChargeId: pay.telegramPaymentChargeId,
-      });
-    }
+      })
+      .onConflictDoNothing({ target: subscriptionPayments.telegramPaymentChargeId })
+      .returning({ id: subscriptionPayments.id });
+    if (inserted.length === 0) return;
+
+    await syncSubscription(tx, payer.id, new Date());
   });
 }
 
-/** Ends Premium when Stars for that charge are refunded. Returns false when the charge is not a subscription. */
+/**
+ * Refunds one Premium charge, including a charge that is not the latest.
+ * Returns false when the charge is not a subscription payment.
+ * A second refund of the same charge does not change the plan again.
+ */
 export async function refundSubscription(db: DB, telegramPaymentChargeId: string): Promise<boolean> {
   return db.transaction(async (tx) => {
-    const [row] = await tx
-      .select({ id: subscriptions.id })
-      .from(subscriptions)
-      .where(eq(subscriptions.telegramPaymentChargeId, telegramPaymentChargeId))
+    const [found] = await tx
+      .select({ userId: subscriptionPayments.userId })
+      .from(subscriptionPayments)
+      .where(eq(subscriptionPayments.telegramPaymentChargeId, telegramPaymentChargeId));
+    if (!found) return false;
+
+    await tx.select({ id: users.id }).from(users).where(eq(users.id, found.userId)).for("update");
+    const [payment] = await tx
+      .select()
+      .from(subscriptionPayments)
+      .where(eq(subscriptionPayments.telegramPaymentChargeId, telegramPaymentChargeId))
       .for("update");
-    if (!row) return false;
-    await tx.update(subscriptions).set({ expiresAt: new Date() }).where(eq(subscriptions.id, row.id));
+    if (!payment) return false;
+    if (!payment.refundedAt) {
+      await tx
+        .update(subscriptionPayments)
+        .set({ refundedAt: new Date() })
+        .where(eq(subscriptionPayments.id, payment.id));
+      await syncSubscription(tx, payment.userId, new Date());
+    }
     return true;
   });
 }

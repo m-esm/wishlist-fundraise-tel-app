@@ -43,6 +43,7 @@ export const wishlistVisibility = pgEnum("wishlist_visibility", ["public", "priv
 export const followStatus = pgEnum("follow_status", ["pending", "accepted", "rejected"]);
 export const productStatus = pgEnum("product_status", ["active", "funded", "purchased", "archived"]);
 export const subscriptionPlan = pgEnum("subscription_plan", ["free", "premium"]);
+export const subscriptionTerm = pgEnum("subscription_term", ["annual", "lifetime"]);
 /** "manual" = the plan's "fake payment": contributor declares, owner confirms. */
 export const contributionMethod = pgEnum("contribution_method", ["stars", "manual"]);
 export const contributionStatus = pgEnum("contribution_status", [
@@ -318,26 +319,47 @@ export const notificationOutbox = pgTable(
 // ---------------------------------------------------------------- subscriptions
 
 /**
- * One row per user who ever had premium. No row = free, and a trial is still
- * available. A row with `expires_at` null is lifetime. Limits and the €12.50
- * price live in src/lib/entitlements.ts. Stars checkout is
- * src/services/subscriptions.ts.
+ * Current Premium plan for one user. No row = free, and a trial is still
+ * available. A row with `expires_at` null is lifetime. This row does not store
+ * a charge id: each Stars charge is a `subscription_payments` row.
+ * Limits and the €12.50 price live in src/lib/entitlements.ts.
  */
-export const subscriptions = pgTable(
-  "subscriptions",
+export const subscriptions = pgTable("subscriptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: "cascade" }),
+  plan: subscriptionPlan("plan").notNull().default("free"),
+  /** Null = active indefinitely (lifetime). A past timestamp means Premium has ended. */
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  /** End of the one-time trial. Payments do not overwrite this. Null = no trial. */
+  trialExpiresAt: timestamp("trial_expires_at", { withTimezone: true }),
+  ...timestamps,
+});
+
+/**
+ * One row per Telegram Stars charge for Premium. Unique on the charge id so a
+ * redelivery cannot insert a second row, and a refund can find an older charge.
+ */
+export const subscriptionPayments = pgTable(
+  "subscription_payments",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     userId: uuid("user_id")
       .notNull()
-      .unique()
       .references(() => users.id, { onDelete: "cascade" }),
-    plan: subscriptionPlan("plan").notNull().default("free"),
-    /** Null = active indefinitely (grandfathered / lifetime deal). */
-    expiresAt: timestamp("expires_at", { withTimezone: true }),
-    telegramPaymentChargeId: text("telegram_payment_charge_id"),
+    term: subscriptionTerm("term").notNull(),
+    starsAmount: integer("stars_amount").notNull(),
+    telegramPaymentChargeId: text("telegram_payment_charge_id").notNull(),
+    refundedAt: timestamp("refunded_at", { withTimezone: true }),
     ...timestamps,
   },
-  (t) => [uniqueIndex("subscriptions_tg_charge_uq").on(t.telegramPaymentChargeId)],
+  (t) => [
+    uniqueIndex("subscription_payments_tg_charge_uq").on(t.telegramPaymentChargeId),
+    index("subscription_payments_user_idx").on(t.userId, t.createdAt),
+    check("subscription_payments_stars_positive", sql`${t.starsAmount} > 0`),
+  ],
 );
 
 // ---------------------------------------------------------------- relations
@@ -346,10 +368,15 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   wishlists: many(wishlists),
   contributions: many(contributions),
   subscription: one(subscriptions, { fields: [users.id], references: [subscriptions.userId] }),
+  subscriptionPayments: many(subscriptionPayments),
 }));
 
 export const subscriptionsRelations = relations(subscriptions, ({ one }) => ({
   user: one(users, { fields: [subscriptions.userId], references: [users.id] }),
+}));
+
+export const subscriptionPaymentsRelations = relations(subscriptionPayments, ({ one }) => ({
+  user: one(users, { fields: [subscriptionPayments.userId], references: [users.id] }),
 }));
 
 export const wishlistsRelations = relations(wishlists, ({ one, many }) => ({
@@ -389,3 +416,4 @@ export type Product = typeof products.$inferSelect;
 export type Contribution = typeof contributions.$inferSelect;
 export type GroupSession = typeof groupSessions.$inferSelect;
 export type Subscription = typeof subscriptions.$inferSelect;
+export type SubscriptionPayment = typeof subscriptionPayments.$inferSelect;

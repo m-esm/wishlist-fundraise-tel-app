@@ -3,7 +3,7 @@ import type { DB, Tx } from "../db/client";
 import { contributions, groupSessions, products, wishlists, type Contribution } from "../db/schema";
 import { STARS, starsToMinor } from "../lib/money";
 import { enqueue } from "./outbox";
-import { upsertTelegramUser, type TelegramUserLike } from "./users";
+import { insertTelegramUserIfAbsent, type TelegramUserLike } from "./users";
 
 /*
  * All money state transitions live here so the API (manual decisions) and
@@ -158,7 +158,7 @@ export async function recordStarsPayment(db: DB, pay: SuccessfulStarsPayment): P
       if (c.status === "confirmed") return c;
       [c] = await tx.update(contributions).set(charge).where(eq(contributions.id, c.id)).returning();
     } else {
-      const contributor = await upsertTelegramUser(tx, pay.from);
+      const contributor = await insertTelegramUserIfAbsent(tx, pay.from);
       const [s] = await tx
         .select({ productId: groupSessions.productId, currency: products.currency })
         .from(groupSessions)

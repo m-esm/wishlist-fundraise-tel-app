@@ -81,6 +81,22 @@ describe("Stars payments", () => {
     expect(await outboxKinds()).toContain("group_progress");
   });
 
+  test("a group payment lookup does not write username null", async () => {
+    await db.insert(telegramChats).values({ chatId: -100123, type: "supergroup", botStatus: "member" });
+    const [s] = await db.insert(groupSessions).values({
+      telegramChatId: -100123, beneficiaryId: owner.id, createdById: friend.id, status: "open", productId: product.id,
+    }).returning();
+    await recordStarsPayment(db, {
+      payload: invoicePayload.forSession(s!.id),
+      totalAmount: 100,
+      telegramPaymentChargeId: "ch_noname",
+      providerPaymentChargeId: "",
+      from: { id: friend.telegramId, first_name: "Friend" },
+    });
+    const [row] = await db.select().from(users).where(eq(users.id, friend.id));
+    expect(row!.username).toBe("friend");
+  });
+
   test("only one active session per chat", async () => {
     await db.insert(telegramChats).values({ chatId: -1, type: "group", botStatus: "member" });
     const row = { telegramChatId: -1, beneficiaryId: owner.id, createdById: friend.id };

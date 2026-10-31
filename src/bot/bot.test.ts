@@ -2,7 +2,7 @@ import { beforeEach, expect, mock, test } from "bun:test";
 import { eq, sql } from "drizzle-orm";
 import type { Update, UserFromGetMe } from "grammy/types";
 import { testDb } from "../test/pglite";
-import { contributions, follows, groupSessions, groupSessionVotes, notificationOutbox, products, users, wishlists } from "../db/schema";
+import { contributions, follows, groupSessions, groupSessionVotes, notificationOutbox, products, subscriptionPayments, subscriptions, users, wishlists } from "../db/schema";
 import { enqueue } from "../services/outbox";
 
 // Only the database boundary is replaced. Handlers, services, transactions,
@@ -284,4 +284,51 @@ test("inline cards are personal, and membership changes maintain DM eligibility"
   expect((await db.select().from(users).where(eq(users.id, friend.id)))[0]!.canDm).toBe(false);
   await command("/start", 2);
   expect((await db.select().from(users).where(eq(users.id, friend.id)))[0]!.canDm).toBe(true);
+});
+
+test("premium payment keeps each charge and does not clear a missing username", async () => {
+  const payer = { id: 1, is_bot: false as const, first_name: "Owner" };
+  const pay = (charge: string, term: "a" | "l") =>
+    bot.handleUpdate({
+      update_id: ++sequence,
+      message: {
+        message_id: sequence,
+        date: 1,
+        chat: chat(1),
+        from: payer,
+        successful_payment: {
+          currency: "XTR",
+          total_amount: 100,
+          invoice_payload: `m:${owner.id}:${term}:100`,
+          telegram_payment_charge_id: charge,
+          provider_payment_charge_id: "",
+        },
+      },
+    } as Update);
+  await pay("prem-1", "a");
+  await pay("prem-1", "a");
+  await pay("prem-2", "l");
+  expect((await db.select().from(users).where(eq(users.id, owner.id)))[0]!.username).toBe("owner");
+  expect((await db.select().from(subscriptionPayments)).map((row) => row.telegramPaymentChargeId).sort()).toEqual(["prem-1", "prem-2"]);
+  await bot.handleUpdate({
+    update_id: ++sequence,
+    message: {
+      message_id: sequence,
+      date: 1,
+      chat: chat(1),
+      from: payer,
+      refunded_payment: {
+        currency: "XTR",
+        total_amount: 100,
+        invoice_payload: `m:${owner.id}:a:100`,
+        telegram_payment_charge_id: "prem-1",
+        provider_payment_charge_id: "",
+      },
+    },
+  } as Update);
+  const [first] = await db.select().from(subscriptionPayments).where(eq(subscriptionPayments.telegramPaymentChargeId, "prem-1"));
+  const [sub] = await db.select().from(subscriptions).where(eq(subscriptions.userId, owner.id));
+  expect(first!.refundedAt).not.toBeNull();
+  expect(sub!.expiresAt).toBeNull();
+  expect((await db.select().from(users).where(eq(users.id, owner.id)))[0]!.username).toBe("owner");
 });

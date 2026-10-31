@@ -55,8 +55,8 @@ Downgrading never deletes data.
 | users.setPlan | mutation | `{plan}` | Stub: always `NOT_IMPLEMENTED`. Plan changes go through `subscriptions.*`. |
 | **subscriptions.getStatus** | query | – | `{ plan, expiresAt, lifetime, trialAvailable, annualStars, lifetimeStars, priceMinor: 1250, priceCurrency: "EUR", trialDays: 30 }`. Stars are null when `STARS_RATES` has no EUR rate. |
 | subscriptions.initiateTrial | mutation | – | First activation only. Sets `expiresAt` to now + 30 days. A later call is `CONFLICT`. |
-| subscriptions.purchaseAnnual | mutation | – | Stars invoice for €12.50. Confirmation sets expiry to 365 days after the later of now and the current expiry. |
-| subscriptions.purchaseLifetime | mutation | – | Stars invoice for €12.50. Confirmation sets `expiresAt` to null. |
+| subscriptions.purchaseAnnual | mutation | – | Stars invoice for €12.50. Confirmation stores that charge and sets expiry to 365 days after the later of now and the current expiry. |
+| subscriptions.purchaseLifetime | mutation | – | Stars invoice for €12.50. Confirmation stores that charge and sets `expiresAt` to null while the lifetime charge is paid. |
 | users.profile | query | `{userId}` or `{username}` | Profile card, `followStatus` (viewer→user), `followsMe`, counts |
 | users.search | query | `{query, limit}` | Prefix search on username or first name |
 | **wishlists.list** | query | `{userId?}` | Lists the viewer may see, with item and funded counts |
