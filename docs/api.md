@@ -49,10 +49,14 @@ Downgrading never deletes data.
 
 | Procedure | Type | Input | Notes |
 |---|---|---|---|
-| **auth.session** | mutation | – | Called on Mini App boot. Refreshes the profile and returns `{ user, startParam, chatType }`. `startParam` is one of `u_<userId>`, `w_<wishlistId>`, `p_<productId>`, `s_<sessionId>`. |
+| **auth.session** | mutation | – | Called on Mini App boot. Refreshes the profile and returns `{ user, startParam, chatType }`. `startParam` is one of `u_<userId>`, `w_<wishlistId>`, `p_<productId>`, `s_<sessionId>`, or `premium`. |
 | **users.me** | query | – | `{ user, plan, limits }` (`null` = unlimited) |
 | users.updateMe | mutation | `bio?, autoAcceptFollows?, notificationsEnabled?, defaultCurrency?` | Currency = `XTR` or a key in `STARS_RATES`. |
-| users.setPlan | mutation | `{plan}` | Stub: always `NOT_IMPLEMENTED` ("Premium coming soon"). |
+| users.setPlan | mutation | `{plan}` | Stub: always `NOT_IMPLEMENTED`. Plan changes go through `subscriptions.*`. |
+| **subscriptions.getStatus** | query | – | `{ plan, expiresAt, lifetime, trialAvailable, annualStars, lifetimeStars, priceMinor: 1250, priceCurrency: "EUR", trialDays: 30 }`. Stars are null when `STARS_RATES` has no EUR rate. |
+| subscriptions.initiateTrial | mutation | – | First activation only. Sets `expiresAt` to now + 30 days. A later call is `CONFLICT`. |
+| subscriptions.purchaseAnnual | mutation | – | Stars invoice for €12.50. Confirmation sets expiry to 365 days after the later of now and the current expiry. |
+| subscriptions.purchaseLifetime | mutation | – | Stars invoice for €12.50. Confirmation sets `expiresAt` to null. |
 | users.profile | query | `{userId}` or `{username}` | Profile card, `followStatus` (viewer→user), `followsMe`, counts |
 | users.search | query | `{query, limit}` | Prefix search on username or first name |
 | **wishlists.list** | query | `{userId?}` | Lists the viewer may see, with item and funded counts |

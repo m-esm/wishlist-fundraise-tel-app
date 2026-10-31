@@ -48,11 +48,13 @@ export type StartParam =
   | { kind: "user"; userId: string } // u_<uuid>  open profile
   | { kind: "wishlist"; wishlistId: string } // w_<uuid>  open wishlist
   | { kind: "product"; productId: string } // p_<uuid>  open product / contribute
-  | { kind: "session"; sessionId: string }; // s_<uuid>  contribute to group session
+  | { kind: "session"; sessionId: string } // s_<uuid>  contribute to group session
+  | { kind: "premium" }; // premium  open the Mini App upgrade screen
 
 const UUID = /^[0-9a-f-]{36}$/;
 export function parseStartParam(raw: string | undefined | null): StartParam | null {
   if (!raw) return null;
+  if (raw.trim() === "premium") return { kind: "premium" };
   const [prefix, id] = [raw.slice(0, 2), raw.slice(2)];
   if (!UUID.test(id)) return null;
   switch (prefix) {

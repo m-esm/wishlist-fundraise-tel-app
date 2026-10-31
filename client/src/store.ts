@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 export type Route =
-  | { kind: "home" | "requests" | "settings" }
+  | { kind: "home" | "requests" | "settings" | "upgrade" }
   | { kind: "user"; userId: string }
   | { kind: "wishlist"; wishlistId: string }
   | { kind: "product"; productId: string; sessionId?: string }

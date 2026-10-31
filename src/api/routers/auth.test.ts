@@ -62,6 +62,16 @@ describe("auth router", () => {
     expect(res.startParam).toBeNull();
   });
 
+  test("session opens the Premium screen from start_param premium", async () => {
+    const db = await testDb();
+    const caller = appRouter.createCaller({
+      db,
+      initData: { user: { id: 7003, first_name: "X" }, authDate: new Date(), startParam: "premium" },
+      authError: null,
+    });
+    expect((await caller.auth.session()).startParam).toEqual({ kind: "premium" });
+  });
+
   test("an unknown start_param is ignored", async () => {
     const db = await testDb();
     const caller = appRouter.createCaller({

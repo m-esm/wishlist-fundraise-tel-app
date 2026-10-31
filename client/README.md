@@ -31,4 +31,4 @@ A wish can include a product link and a JPEG, PNG, or WebP photo up to 5 MB. The
 
 Stars invoices open Telegram's payment UI. A paid callback only displays that payment was submitted; the server's successful-payment handler remains responsible for confirming funding. Manual claims remain pending until the owner confirms receipt. Anonymous identities remain controlled by server responses.
 
-Premium checkout is not exposed by the current API. Plan limits display the server rejection; subscription purchasing and real Telegram verification remain integration gates.
+Premium is a Mini App screen. A plan-limit error links to it. The screen can start one 30-day trial or open a Stars invoice for a year or for life. Both paid options cost €12.50, converted with the server EUR Stars rate. Telegram still confirms the payment. There is no `/premium` command.

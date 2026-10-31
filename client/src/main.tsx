@@ -9,7 +9,10 @@ import { useNavigation } from "./store";
 import "./style.css";
 
 function Notice({ error }: { error: unknown }) {
-  return error ? <p className="notice" role="alert">{message(error)}</p> : null;
+  const go = useNavigation((s) => s.go);
+  if (!error) return null;
+  const limited = error instanceof Error && error.message.includes("plan_limit:");
+  return <div className="notice" role="alert"><p>{message(error)}</p>{limited && <button type="button" className="secondary" onClick={() => go({ kind: "upgrade" })}>Review Premium</button>}</div>;
 }
 
 function Empty({ children }: { children: ReactNode }) {
@@ -171,10 +174,47 @@ function Session({ sessionId }: { sessionId: string }) {
   return <><p className="session-label">Group gift · {session.data.chatTitle} · {session.data.session.status}</p>{session.data.product ? <Product productId={session.data.product.id} sessionId={sessionId} collecting={session.data.session.status === "open"} /> : <Empty>The group is still choosing a wish.</Empty>}</>;
 }
 
+function when(value: Date | string | null): string {
+  if (!value) return "No end date";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "No end date";
+  return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function Upgrade() {
+  const status = useQuery({ queryKey: ["premium"], queryFn: () => api.subscriptions.getStatus.query() });
+  const [receipt, setReceipt] = useState("");
+  const trial = useAction(() => api.subscriptions.initiateTrial.mutate());
+  const buy = useAction(async (term: "annual" | "lifetime") => {
+    const invoice = term === "annual"
+      ? await api.subscriptions.purchaseAnnual.mutate()
+      : await api.subscriptions.purchaseLifetime.mutate();
+    await new Promise<void>((resolve) => {
+      WebApp.openInvoice(invoice.invoiceLink, (result) => {
+        setReceipt(result === "paid"
+          ? "Payment submitted. Premium updates after Telegram confirms it."
+          : result === "cancelled"
+            ? "Payment cancelled. Nothing has been confirmed."
+            : "Payment is not yet confirmed.");
+        void queryClient.invalidateQueries();
+        resolve();
+      });
+    });
+  });
+  if (!status.data) return <><Notice error={status.error} /><p role="status">{status.isPending ? "Loading Premium…" : "Premium is unavailable."}</p></>;
+  const s = status.data;
+  const price = s.annualStars == null ? "Stars price unavailable until EUR is configured." : `${s.annualStars.toLocaleString()} Stars`;
+  return <section className="hero"><span className="eyebrow">Premium</span><h1>Unlimited wishlists</h1><p>Free includes 1 public list, 1 private list, and 5 wishes on each. Premium removes those limits.</p><p>Current plan: {s.plan}{s.lifetime ? " · no end date" : s.expiresAt ? ` · until ${when(s.expiresAt)}` : ""}</p>
+    {s.trialAvailable && <button disabled={trial.isPending} onClick={() => trial.mutate()}>{trial.isPending ? "Starting…" : `Start ${s.trialDays}-day trial`}</button>}
+    {!s.lifetime && <><button disabled={buy.isPending || s.annualStars == null} onClick={() => buy.mutate("annual")}>One year · {price}</button><button className="secondary" disabled={buy.isPending || s.lifetimeStars == null} onClick={() => buy.mutate("lifetime")}>Lifetime · {price}</button><p>€12.50 converted to Stars at checkout. Telegram confirms the payment.</p></>}
+    <Notice error={trial.error || buy.error} /><p role="status">{receipt}</p></section>;
+}
+
 function Settings() {
+  const go = useNavigation((s) => s.go);
   const me = useQuery({ queryKey: ["me"], queryFn: () => api.users.me.query() });
   const update = useAction((input: { notificationsEnabled?: boolean; autoAcceptFollows?: boolean }) => api.users.updateMe.mutate(input));
-  return <section><h1>Your profile</h1><Notice error={me.error || update.error} />{me.data && <><h2>{me.data.user.firstName}</h2><p>Current plan: {me.data.plan}</p><label className="check"><input type="checkbox" checked={me.data.user.notificationsEnabled} disabled={update.isPending} onChange={(e) => update.mutate({ notificationsEnabled: e.target.checked })} />Send notifications</label><label className="check"><input type="checkbox" checked={me.data.user.autoAcceptFollows} disabled={update.isPending} onChange={(e) => update.mutate({ autoAcceptFollows: e.target.checked })} />Automatically accept followers</label><p>Automatic acceptance lets new followers see your private wishlists.</p><button className="secondary" onClick={() => WebApp.showAlert("Premium upgrade is not available yet. Contact the bot owner for help.")}>Review upgrade options</button></>}</section>;
+  return <section><h1>Your profile</h1><Notice error={me.error || update.error} />{me.data && <><h2>{me.data.user.firstName}</h2><p>Current plan: {me.data.plan}</p><label className="check"><input type="checkbox" checked={me.data.user.notificationsEnabled} disabled={update.isPending} onChange={(e) => update.mutate({ notificationsEnabled: e.target.checked })} />Send notifications</label><label className="check"><input type="checkbox" checked={me.data.user.autoAcceptFollows} disabled={update.isPending} onChange={(e) => update.mutate({ autoAcceptFollows: e.target.checked })} />Automatically accept followers</label><p>Automatic acceptance lets new followers see your private wishlists.</p><button className="secondary" onClick={() => go({ kind: "upgrade" })}>Review Premium</button></>}</section>;
 }
 
 function App() {
@@ -185,7 +225,8 @@ function App() {
   useEffect(() => {
     if (session.data?.startParam && !routed.current) {
       routed.current = true;
-      go(session.data.startParam);
+      const start = session.data.startParam;
+      go(start.kind === "premium" ? { kind: "upgrade" } : start);
     }
   }, [session.data, go]);
   useEffect(() => {
@@ -202,6 +243,7 @@ function App() {
     {route.kind === "requests" && <Requests />}
     {route.kind === "session" && <Session sessionId={route.sessionId} />}
     {route.kind === "settings" && <Settings />}
+    {route.kind === "upgrade" && <Upgrade />}
   </>}</main><nav aria-label="Main navigation">{(["home", "requests", "settings"] as const).map((kind) => <button key={kind} aria-current={route.kind === kind ? "page" : undefined} onClick={() => go({ kind })}>{kind === "home" ? "Wishlists" : kind === "requests" ? "Requests" : "Profile"}</button>)}</nav></>;
 }
 
