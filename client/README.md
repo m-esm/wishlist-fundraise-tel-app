@@ -27,6 +27,8 @@ Open through Telegram. The client sends the unmodified SDK `initData` as `Author
 
 The build rejects any module under the repository-root `src/` and the Drizzle, grammY, `@grammyjs/*`, `@aws-sdk/*`, ioredis and Postgres packages. The router import is type-only, so `@trpc/server` stays allowed.
 
+A wish can include a product link and a JPEG, PNG, or WebP photo up to 5 MB. The photo is uploaded with `products.presignImage` and saved as `imageUrl`. That step does not need a live bot token. Local API runs use the placeholder `BOT_TOKEN` in the repository `.env.example`.
+
 Stars invoices open Telegram's payment UI. A paid callback only displays that payment was submitted; the server's successful-payment handler remains responsible for confirming funding. Manual claims remain pending until the owner confirms receipt. Anonymous identities remain controlled by server responses.
 
 Premium checkout is not exposed by the current API. Plan limits display the server rejection; subscription purchasing and real Telegram verification remain integration gates.

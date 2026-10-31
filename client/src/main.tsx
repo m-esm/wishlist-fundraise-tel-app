@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClientProvider, useMutation, useQuery } from "@tanstack/react-query";
 import WebApp from "@twa-dev/sdk";
 import { api, message, money, queryClient, trpc } from "./api";
+import { photoError, photoType } from "./image";
 import { useNavigation } from "./store";
 import "./style.css";
 
@@ -52,19 +53,79 @@ function Profile({ userId }: { userId: string }) {
 function Wishlist({ wishlistId }: { wishlistId: string }) {
   const go = useNavigation((s) => s.go);
   const list = useQuery({ queryKey: ["wishlist", wishlistId], queryFn: () => api.wishlists.get.query({ wishlistId }) });
-  const add = useAction((input: { title: string; priceMinor: number; currency: string }) => api.products.create.mutate({ wishlistId, ...input }));
+  const [photo, setPhoto] = useState<File | null>(null);
+  const [photoMessage, setPhotoMessage] = useState("");
+  const [linkMessage, setLinkMessage] = useState("");
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const add = useAction(async (input: { title: string; description?: string; url?: string; priceMinor: number; currency: string; photo: File | null }) => {
+    let imageUrl: string | undefined;
+    if (input.photo) {
+      const contentType = photoType(input.photo);
+      if (!contentType) throw new Error("Use a JPEG, PNG, or WebP photo.");
+      const signed = await api.products.presignImage.mutate({ contentType, contentLength: input.photo.size });
+      const uploaded = await fetch(signed.uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": contentType },
+        body: input.photo,
+      });
+      if (!uploaded.ok) throw new Error("Unable to upload the photo. Check your connection and try again.");
+      imageUrl = signed.publicUrl;
+    }
+    await api.products.create.mutate({
+      wishlistId,
+      title: input.title,
+      description: input.description,
+      url: input.url,
+      imageUrl,
+      priceMinor: input.priceMinor,
+      currency: input.currency,
+    });
+  });
+  useEffect(() => {
+    if (!photo) { setPreviewUrl(null); return; }
+    const url = URL.createObjectURL(photo);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [photo]);
   if (!list.data) return <><Notice error={list.error} /><p role="status">{list.isPending ? "Loading wishes…" : "Wishlist unavailable."}</p></>;
   const { wishlist: w, products, isOwner } = list.data;
+  function choosePhoto(file: File | null, input: HTMLInputElement) {
+    const problem = file ? photoError(file) : null;
+    if (problem) {
+      input.value = "";
+      setPhoto(null);
+      setPhotoMessage(problem);
+      return;
+    }
+    setPhoto(file);
+    setPhotoMessage("");
+  }
   function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = e.currentTarget;
     const data = new FormData(form);
     const currency = String(data.get("currency"));
-    add.mutate({ title: String(data.get("title")).trim(), priceMinor: Math.round(Number(data.get("price")) * (currency === "XTR" ? 1 : 100)), currency }, { onSuccess: () => form.reset() });
+    const description = String(data.get("description") ?? "").trim();
+    const url = String(data.get("url") ?? "").trim();
+    if (url && !/^https?:\/\//i.test(url)) {
+      setLinkMessage("Use a product link that starts with https://.");
+      return;
+    }
+    setLinkMessage("");
+    add.mutate({
+      title: String(data.get("title")).trim(),
+      description: description || undefined,
+      url: url || undefined,
+      priceMinor: Math.round(Number(data.get("price")) * (currency === "XTR" ? 1 : 100)),
+      currency,
+      photo,
+    }, {
+      onSuccess: () => { form.reset(); setPhoto(null); setPhotoMessage(""); setLinkMessage(""); },
+    });
   }
   return <><section className="hero"><span className="eyebrow">{w.visibility} wishlist</span><h1>{w.emoji} {w.title}</h1><p>{w.description || "One wish at a time."}</p></section>
-    <section><h2>The wishes</h2>{!products.length && <Empty>This list is waiting for its first wish.</Empty>}<div className="cards">{products.map((p) => <button className="list-card" key={p.id} onClick={() => go({ kind: "product", productId: p.id })}><strong>{p.title}</strong><span>{money(p.fundedMinor, p.currency)} of {money(p.priceMinor, p.currency)}</span><progress aria-label={`${p.title} funding`} value={Math.min(p.fundedMinor, p.priceMinor)} max={p.priceMinor} /></button>)}</div>
-    {isOwner && <form onSubmit={submit}><h3>Add a wish</h3><label>What is it?<input name="title" required maxLength={200} /></label><div className="fields"><label>Price<input name="price" type="number" min="0.01" step="0.01" required /></label><label>Currency<select name="currency"><option>USD</option><option>EUR</option><option>XTR</option></select></label></div><button disabled={add.isPending}>Add wish</button><Notice error={add.error} /></form>}</section></>;
+    <section><h2>The wishes</h2>{!products.length && <Empty>This list is waiting for its first wish.</Empty>}<div className="cards">{products.map((p) => <button className="list-card" key={p.id} onClick={() => go({ kind: "product", productId: p.id })}>{p.imageUrl && <img className="wish-photo" src={p.imageUrl} alt="" />}<strong>{p.title}</strong><span>{money(p.fundedMinor, p.currency)} of {money(p.priceMinor, p.currency)}</span><progress aria-label={`${p.title} funding`} value={Math.min(p.fundedMinor, p.priceMinor)} max={p.priceMinor} /></button>)}</div>
+    {isOwner && <form onSubmit={submit}><h3>Add a wish</h3><label>What is it?<input name="title" required maxLength={200} /></label><label>Details<input name="description" maxLength={2000} /></label><label>Product link<input name="url" type="url" inputMode="url" maxLength={2048} placeholder="https://" aria-invalid={linkMessage ? true : undefined} aria-describedby={linkMessage ? "link-error" : undefined} /></label>{linkMessage && <p id="link-error" className="notice" role="alert">{linkMessage}</p>}<label>Photo<input name="photo" type="file" accept="image/jpeg,image/png,image/webp" aria-invalid={photoMessage ? true : undefined} aria-describedby={photoMessage ? "photo-error" : undefined} onChange={(e) => choosePhoto(e.target.files?.[0] ?? null, e.currentTarget)} /></label>{previewUrl && <img className="photo-preview" src={previewUrl} alt="" />}{photoMessage && <p id="photo-error" className="notice" role="alert">{photoMessage}</p>}<div className="fields"><label>Price<input name="price" type="number" min="0.01" step="0.01" required /></label><label>Currency<select name="currency"><option>USD</option><option>EUR</option><option>XTR</option></select></label></div><button disabled={add.isPending}>Add wish</button><Notice error={add.error} /></form>}</section></>;
 }
 
 function Product({ productId, sessionId, collecting = true }: { productId: string; sessionId?: string; collecting?: boolean }) {
@@ -91,7 +152,7 @@ function Product({ productId, sessionId, collecting = true }: { productId: strin
   });
   if (!product.data) return <><Notice error={product.error} /><p role="status">{product.isPending ? "Loading wish…" : "Wish unavailable."}</p></>;
   const { product: p, isOwner } = product.data;
-  return <><section className="hero"><span className="eyebrow">{product.data.wishlist.title}</span><h1>{p.title}</h1><p>{p.description}</p><div className="amount">{money(p.fundedMinor, p.currency)} <small>of {money(p.priceMinor, p.currency)}</small></div><progress aria-label="Funding progress" value={Math.min(p.fundedMinor, p.priceMinor)} max={p.priceMinor} /><p>{product.data.contributorCount} contributors · {p.status}</p></section>
+  return <><section className="hero"><span className="eyebrow">{product.data.wishlist.title}</span>{p.imageUrl && <img className="wish-photo" src={p.imageUrl} alt="" />}<h1>{p.title}</h1><p>{p.description}</p><div className="amount">{money(p.fundedMinor, p.currency)} <small>of {money(p.priceMinor, p.currency)}</small></div><progress aria-label="Funding progress" value={Math.min(p.fundedMinor, p.priceMinor)} max={p.priceMinor} /><p>{product.data.contributorCount} contributors · {p.status}</p></section>
     {!isOwner && collecting && p.status === "active" && <section><form onSubmit={(e) => { e.preventDefault(); setReceipt(""); pay.mutate(); }}><h2>Be part of this wish</h2><label>Contribution method<select value={mode} onChange={(e) => { setMode(e.target.value as typeof mode); setAmount("100"); }}><option value="stars">Telegram Stars</option><option value="manual">Manual payment confirmation</option></select></label><label>{mode === "stars" ? "Stars" : `Amount (${p.currency})`}<input type="number" min={mode === "stars" || p.currency === "XTR" ? "1" : "0.01"} step={mode === "stars" || p.currency === "XTR" ? "1" : "0.01"} required value={amount} onChange={(e) => setAmount(e.target.value)} /></label>{mode === "stars" && quote.data && <p>Credits {quote.data.formatted} toward this wish.</p>}<Notice error={quote.error} /><label>Message<input maxLength={280} value={note} onChange={(e) => setNote(e.target.value)} /></label><label className="check"><input type="checkbox" checked={anonymous} onChange={(e) => setAnonymous(e.target.checked)} />Keep my name anonymous</label><button disabled={pay.isPending || Number(amount) <= 0}>{pay.isPending ? "Preparing…" : mode === "stars" ? "Continue in Telegram" : "Request owner confirmation"}</button><Notice error={pay.error} /><p role="status">{receipt}</p></form></section>}
     <section><h2>Contributions</h2><Notice error={history.error} />{history.data?.items.length === 0 && <Empty>No contributions yet.</Empty>}{history.data?.items.map((c) => <article className="request" key={c.id}><strong>{money(c.amountMinor, c.currency)}</strong><p>{c.contributor?.firstName || "Anonymous"} · {c.status.replaceAll("_", " ")}</p>{c.message && <p>{c.message}</p>}</article>)}{history.data?.nextCursor && <p>Showing the 30 most recent contributions.</p>}</section></>;
 }
