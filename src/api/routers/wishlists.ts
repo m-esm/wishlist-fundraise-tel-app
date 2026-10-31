@@ -1,10 +1,17 @@
+import { TRPCError } from "@trpc/server";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { products, wishlists } from "../../db/schema";
 import { assertCanHaveWishlist } from "../../lib/entitlements";
 import { canViewWishlist } from "../../services/access";
 import { authedProcedure, router } from "../trpc";
-import { id, ownedWishlist, readableWishlist } from "./_shared";
+import { badRequest, id, ownedWishlist, readableWishlist } from "./_shared";
+
+/** Client timestamps arrive as ISO strings through superjson's JSON path, so accept both. */
+const eventDate = z
+  .union([z.date(), z.iso.datetime({ offset: true }), z.iso.datetime()])
+  .nullish()
+  .transform((v) => (v == null ? v : v instanceof Date ? v : new Date(v)));
 
 const visibility = z.enum(["public", "private"]);
 const fields = {
@@ -12,8 +19,13 @@ const fields = {
   description: z.string().max(2000).nullish(),
   emoji: z.string().max(8).nullish(),
   visibility,
-  eventDate: z.date().nullish(),
+  eventDate,
 };
+
+/** Archived lists are read-only; restore is not offered in v1. */
+function assertNotArchived(w: { archivedAt: Date | null }) {
+  if (w.archivedAt) throw new TRPCError({ code: "CONFLICT", message: "wishlist is archived" });
+}
 
 export const wishlistsRouter = router({
   /** Lists owned by userId (default: me) that the viewer may see, with item counts and totals. */
@@ -69,6 +81,7 @@ export const wishlistsRouter = router({
     .input(z.object({ wishlistId: id, ...z.object(fields).partial().shape }))
     .mutation(async ({ ctx, input: { wishlistId, ...patch } }) => {
       const current = await ownedWishlist(ctx.db, ctx.user.id, wishlistId);
+      assertNotArchived(current);
       if (patch.visibility && patch.visibility !== current.visibility) {
         await assertCanHaveWishlist(ctx.db, ctx.user.id, patch.visibility, wishlistId);
       }
@@ -84,7 +97,7 @@ export const wishlistsRouter = router({
           .select({ id: wishlists.id })
           .from(wishlists)
           .where(and(eq(wishlists.ownerId, ctx.user.id), inArray(wishlists.id, input.orderedIds)));
-        if (owned.length !== new Set(input.orderedIds).size) throw new Error("unknown wishlist id");
+        if (owned.length !== new Set(input.orderedIds).size) throw badRequest("unknown wishlist id");
         for (const [i, wid] of input.orderedIds.entries()) {
           await tx.update(wishlists).set({ position: i }).where(eq(wishlists.id, wid));
         }
@@ -97,8 +110,10 @@ export const wishlistsRouter = router({
    * not offered because contributions.product_id is ON DELETE RESTRICT.
    */
   archive: authedProcedure.input(z.object({ wishlistId: id })).mutation(async ({ ctx, input }) => {
-    await ownedWishlist(ctx.db, ctx.user.id, input.wishlistId);
-    await ctx.db.update(wishlists).set({ archivedAt: new Date() }).where(eq(wishlists.id, input.wishlistId));
+    const w = await ownedWishlist(ctx.db, ctx.user.id, input.wishlistId);
+    if (!w.archivedAt) {
+      await ctx.db.update(wishlists).set({ archivedAt: new Date() }).where(eq(wishlists.id, input.wishlistId));
+    }
     return { ok: true };
   }),
 });

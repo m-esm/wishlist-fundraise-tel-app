@@ -16,6 +16,18 @@ export const page = z.object({
 
 export const notFound = (what: string) => new TRPCError({ code: "NOT_FOUND", message: `${what} not found` });
 
+export function badRequest(message: string): TRPCError {
+  return new TRPCError({ code: "BAD_REQUEST", message });
+}
+
+/** Keyset pagination cursor: the ISO created_at of the last row of the previous page. */
+export function parseCursor(cursor: string | null | undefined): Date | undefined {
+  if (!cursor) return undefined;
+  const d = new Date(cursor);
+  if (Number.isNaN(d.getTime())) throw badRequest("invalid cursor");
+  return d;
+}
+
 /** Wishlist the viewer may read; NOT_FOUND (not FORBIDDEN) to avoid leaking existence. */
 export async function readableWishlist(db: Executor, viewerId: string, wishlistId: string) {
   const [w] = await db.select().from(wishlists).where(eq(wishlists.id, wishlistId));
@@ -39,12 +51,19 @@ export async function readableProduct(db: Executor, viewerId: string, productId:
   return row;
 }
 
-export async function ownedProduct(db: Executor, ownerId: string, productId: string) {
+/** Product row without visibility checks (still owner-guarded by callers). */
+export async function anyProduct(db: Executor, productId: string) {
   const [row] = await db
     .select({ product: products, wishlist: wishlists })
     .from(products)
     .innerJoin(wishlists, eq(wishlists.id, products.wishlistId))
     .where(eq(products.id, productId));
-  if (!row || row.wishlist.ownerId !== ownerId) throw notFound("product");
+  if (!row) throw notFound("product");
+  return row;
+}
+
+export async function ownedProduct(db: Executor, ownerId: string, productId: string) {
+  const row = await anyProduct(db, productId);
+  if (row.wishlist.ownerId !== ownerId) throw notFound("product");
   return row;
 }

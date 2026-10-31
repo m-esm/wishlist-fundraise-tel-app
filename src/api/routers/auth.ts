@@ -9,12 +9,15 @@ export const authRouter = router({
    * (u_ profile, w_ wishlist, p_ product, s_ group session).
    */
   session: authedProcedure.mutation(async ({ ctx }) => {
-    const user = await upsertTelegramUser(ctx.db, ctx.initData.user);
+    // A test context has no initData; there `user` is already the stored row.
+    const initData = "initData" in ctx ? ctx.initData : null;
+    const user = initData ? await upsertTelegramUser(ctx.db, initData.user) : ctx.user;
     return {
       user,
-      startParam: parseStartParam(ctx.initData.startParam),
-      // initData has no chat info when opened from a t.me link in a group.
-      chatType: ctx.initData.chatType ?? null,
+      startParam: parseStartParam(initData?.startParam),
+      // Telegram adds chat_type/chat_instance only when the Mini App was opened
+      // from an attachment menu or a `t.me/<bot>/<app>?startapp=...` link in a chat.
+      chatType: initData?.chatType ?? null,
     };
   }),
 });

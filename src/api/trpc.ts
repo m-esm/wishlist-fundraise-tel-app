@@ -2,7 +2,7 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import type { FetchCreateContextFnOptions } from "@trpc/server/adapters/fetch";
 import { eq } from "drizzle-orm";
 import superjson from "superjson";
-import { db } from "../db/client";
+import { db, type DB } from "../db/client";
 import { users } from "../db/schema";
 import { env } from "../env";
 import { InitDataError, validateInitData, type InitData } from "../lib/init-data";
@@ -30,12 +30,27 @@ export async function createContext({ req }: FetchCreateContextFnOptions) {
       authError = e instanceof InitDataError ? e.message : "invalid initData";
     }
   }
-  return { db, initData, authError };
+  return { db: db as DB, initData, authError };
 }
 
-type Context = Awaited<ReturnType<typeof createContext>>;
+/** Request context (what createContext returns, before auth). */
+export interface RequestContext {
+  db: DB;
+  initData: InitData | null;
+  authError: string | null;
+}
 
-const t = initTRPC.context<Context>().create({
+/**
+ * Test-only context: a PGlite database and the already-stored user, with no
+ * initData, so auth never runs (no rate limit, no upsert). Detected by the
+ * absence of the `initData` key, which createContext always sets.
+ */
+export interface TestContext {
+  db: DB;
+  user: typeof users.$inferSelect;
+}
+
+const t = initTRPC.context<RequestContext | TestContext>().create({
   transformer: superjson,
   errorFormatter: ({ shape }) => shape,
 });
@@ -55,18 +70,31 @@ const errorMapping = t.middleware(async ({ next }) => {
   return res;
 });
 
+type AuthedContext = RequestContext & { user: typeof users.$inferSelect };
+type TestAuthedContext = RequestContext & TestContext;
+
+function testUserOf(ctx: RequestContext | TestContext): typeof users.$inferSelect | null {
+  return "initData" in ctx ? null : ctx.user;
+}
+
 export const publicProcedure = t.procedure.use(errorMapping);
 
 /** Requires valid initData; resolves (and lazily creates) the DB user. */
-export const authedProcedure = publicProcedure.use(async ({ ctx, next }) => {
-  if (!ctx.initData) {
-    throw new TRPCError({ code: "UNAUTHORIZED", message: ctx.authError ?? "missing initData" });
-  }
-  const tgUser = ctx.initData.user;
-  if (!(await rateLimit(`u:${tgUser.id}`, env.RATE_LIMIT_PER_MINUTE))) {
-    throw new TRPCError({ code: "TOO_MANY_REQUESTS" });
-  }
-  let [user] = await ctx.db.select().from(users).where(eq(users.telegramId, tgUser.id));
-  user ??= await upsertTelegramUser(ctx.db, tgUser);
-  return next({ ctx: { ...ctx, initData: ctx.initData, user } });
-});
+export const authedProcedure = publicProcedure
+  .use(async ({ ctx, next }) => {
+    const test = testUserOf(ctx);
+    if (test) return next({ ctx: { db: ctx.db as DB, initData: null, user: test } });
+
+    const request = ctx as RequestContext;
+    if (!request.initData) {
+      throw new TRPCError({ code: "UNAUTHORIZED", message: request.authError ?? "missing initData" });
+    }
+    const tgUser = request.initData.user;
+    if (!(await rateLimit(`u:${tgUser.id}`, env.RATE_LIMIT_PER_MINUTE))) {
+      throw new TRPCError({ code: "TOO_MANY_REQUESTS" });
+    }
+    const [existing] = await request.db.select().from(users).where(eq(users.telegramId, tgUser.id));
+    const user = existing ?? (await upsertTelegramUser(request.db, tgUser));
+    return next({ ctx: { db: request.db, initData: request.initData, user } });
+  })
+  .use(({ ctx, next }) => next({ ctx: ctx as unknown as AuthedContext | TestAuthedContext }));

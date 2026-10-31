@@ -28,9 +28,17 @@ export const groupSessionsRouter = router({
     return row;
   }),
 
-  /** Per-session leaderboard (anonymous contributors grouped as one masked row). */
-  leaderboard: authedProcedure.input(z.object({ sessionId: id })).query(({ ctx, input }) =>
-    ctx.db
+  /**
+   * Per-session leaderboard (anonymous contributors grouped as one masked row).
+   * Voting sessions show a preview that only the starter or the beneficiary
+   * can read. An unknown session id is NOT_FOUND.
+   */
+  leaderboard: authedProcedure.input(z.object({ sessionId: id })).query(async ({ ctx, input }) => {
+    const [s] = await ctx.db.select().from(groupSessions).where(eq(groupSessions.id, input.sessionId));
+    if (!s) throw notFound("group session");
+    const mayBrowse = s.status !== "voting" || s.beneficiaryId === ctx.user.id || s.createdById === ctx.user.id;
+    if (!mayBrowse) throw notFound("group session");
+    return ctx.db
       .select({
         userId: sql<string | null>`case when ${contributions.isAnonymous} then null else ${users.id} end`,
         name: sql<string>`case when ${contributions.isAnonymous} then 'Anonymous' else coalesce('@' || ${users.username}, ${users.firstName}) end`,
@@ -41,8 +49,8 @@ export const groupSessionsRouter = router({
       .where(and(eq(contributions.groupSessionId, input.sessionId), eq(contributions.status, "confirmed")))
       .groupBy(sql`1`, sql`2`)
       .orderBy(desc(sql`3`))
-      .limit(20),
-  ),
+      .limit(20);
+  }),
 
   /** Sessions raising money for me (shown on my profile; I can watch progress). */
   forMe: authedProcedure.query(({ ctx }) =>

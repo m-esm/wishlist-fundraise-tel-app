@@ -51,7 +51,8 @@ Downgrading never deletes data.
 |---|---|---|---|
 | **auth.session** | mutation | – | Called on Mini App boot. Refreshes the profile and returns `{ user, startParam, chatType }`. `startParam` is one of `u_<userId>`, `w_<wishlistId>`, `p_<productId>`, `s_<sessionId>`. |
 | **users.me** | query | – | `{ user, plan, limits }` (`null` = unlimited) |
-| users.updateMe | mutation | `bio?, autoAcceptFollows?, notificationsEnabled?, defaultCurrency?` | |
+| users.updateMe | mutation | `bio?, autoAcceptFollows?, notificationsEnabled?, defaultCurrency?` | Currency = `XTR` or a key in `STARS_RATES`. |
+| users.setPlan | mutation | `{plan}` | Stub: always `NOT_IMPLEMENTED` ("Premium coming soon"). |
 | users.profile | query | `{userId}` or `{username}` | Profile card, `followStatus` (viewer→user), `followsMe`, counts |
 | users.search | query | `{query, limit}` | Prefix search on username or first name |
 | **wishlists.list** | query | `{userId?}` | Lists the viewer may see, with item and funded counts |
@@ -59,7 +60,7 @@ Downgrading never deletes data.
 | wishlists.create | mutation | `title, description?, emoji?, visibility='public', eventDate?` | Plan limit checked |
 | wishlists.update | mutation | `wishlistId` + partial fields | Plan limit checked on a visibility change |
 | wishlists.reorder | mutation | `{orderedIds}` | |
-| wishlists.archive | mutation | `{wishlistId}` | Soft delete (contribution history is kept) |
+| wishlists.archive | mutation | `{wishlistId}` | Soft delete (contribution history is kept). An archived list is read-only: `update`, `products.create` and `products.reorder` return `CONFLICT`. |
 | **products.get** | query | `{productId}` | Product, contributor count, pending manual total, active group sessions |
 | products.create | mutation | `wishlistId, title, priceMinor, currency, description?, url?, imageUrl?, priority?` | **Manual entry only, no URL scraping in v1.** Plan limit checked. `currency` must be `XTR` or a key in `STARS_RATES`. |
 | products.update | mutation | `productId` + partial | Currency is locked after the first confirmed contribution. `funded` status is recomputed when the price changes. |
@@ -67,7 +68,7 @@ Downgrading never deletes data.
 | products.delete | mutation | `{productId}` | Only if it never had contributions |
 | products.reorder | mutation | `{wishlistId, orderedIds}` | |
 | products.presignImage | mutation | `{contentType, contentLength}` | Presigned S3/R2 PUT. The client uploads the image, then saves `publicUrl` as `imageUrl`. |
-| products.recentlyFundedFeed | query | – | Funded items from people I follow |
+| products.recentlyFundedFeed | query | `{userId?}` | Funded public items from people I follow, or from `userId` (profile screen) |
 | **follows.follow** | mutation | `{userId}` | → `pending` (owner gets a DM) or `accepted` (auto-accept is on) |
 | follows.unfollow | mutation | `{userId}` | |
 | follows.respond | mutation | `{followerId, accept}` | Also available as DM buttons |
@@ -77,13 +78,13 @@ Downgrading never deletes data.
 | **contributions.quote** | query | `{productId, stars}` | Amount credited in the product currency, plus Stars needed to finish |
 | contributions.createStarsInvoice | mutation | `productId, stars, message?, isAnonymous, groupSessionId?` | Creates a `pending` row and returns `invoiceLink` for `WebApp.openInvoice`. Only the bot's `successful_payment` handler confirms it. |
 | contributions.declareManual | mutation | `productId, amountMinor, message?, isAnonymous, groupSessionId?` | The "fake payment" flow. Creates `awaiting_confirmation`; the owner gets a DM with ✅/❌. Max 3 open claims per product per user. |
-| contributions.decide | mutation | `{contributionId, decision: confirm\|reject}` | Owner only |
-| contributions.cancel | mutation | `{contributionId}` | Contributor withdraws a `pending` or `awaiting_confirmation` row |
+| contributions.decide | mutation | `{contributionId, decision: confirm\|reject}` | Owner only (`FORBIDDEN` otherwise); a settled row is `CONFLICT` |
+| contributions.cancel | mutation | `{contributionId}` | Contributor withdraws a `pending` or `awaiting_confirmation` row; not yours → `NOT_FOUND`, settled → `CONFLICT` |
 | contributions.listForProduct | query | `{productId, limit, cursor}` | Confirmed rows; the owner also sees awaiting ones. **Anonymous contributors are masked for everyone except themselves, owner included.** |
 | contributions.mine | query | `{limit, cursor}` | |
 | contributions.awaitingMyDecision | query | – | Manual claims to decide (anonymous claims stay masked) |
 | **groupSessions.get** | query | `{sessionId}` | For a Mini App opened with `s_<id>` |
-| groupSessions.leaderboard | query | `{sessionId}` | Top 20; anonymous contributors are grouped as "Anonymous" |
+| groupSessions.leaderboard | query | `{sessionId}` | Top 20; anonymous contributors are grouped as "Anonymous". Unknown id → `NOT_FOUND`; in a `voting` session only the starter and beneficiary may read it |
 | groupSessions.forMe | query | – | Sessions raising money for me |
 
 Group sessions are **created and driven by the bot** (see `docs/bot.md`). The API only reads them.

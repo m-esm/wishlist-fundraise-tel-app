@@ -1,9 +1,8 @@
-import { webhookCallback } from "grammy";
 import { sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { env } from "../env";
 import { redis } from "../lib/redis";
-import { createBot, registerCommands } from "./bot";
+import { createBot, createWebhookHandler, registerCommands } from "./bot";
 import { startOutboxWorker } from "./notifications/worker";
 
 const ALLOWED_UPDATES = [
@@ -31,8 +30,8 @@ if (env.BOT_MODE === "polling") {
     drop_pending_updates: false,
     max_connections: 40,
   });
-  // Checks X-Telegram-Bot-Api-Secret-Token; returns 401 on mismatch.
-  const handle = webhookCallback(bot, "std/http", { secretToken: env.WEBHOOK_SECRET, timeoutMilliseconds: 9_000 });
+  // 401 on a bad secret. 500 when an update handler throws, so Telegram redelivers.
+  const handle = createWebhookHandler(bot, env.WEBHOOK_SECRET);
   Bun.serve({
     port: env.BOT_PORT,
     async fetch(req) {

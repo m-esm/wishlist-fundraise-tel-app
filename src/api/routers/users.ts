@@ -1,9 +1,17 @@
+import { TRPCError } from "@trpc/server";
 import { and, count, eq, ilike, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { follows, users, wishlists } from "../../db/schema";
+import { env } from "../../env";
 import { PLAN_LIMITS, planOf } from "../../lib/entitlements";
 import { authedProcedure, router } from "../trpc";
-import { currency, id, notFound } from "./_shared";
+import { id, notFound } from "./_shared";
+
+/** ISO-4217 (3 letters, uppercase) or XTR; must have a Stars rate unless XTR. */
+const supportedCurrency = z
+  .string()
+  .regex(/^[A-Z]{3}$/, "ISO-4217 code or XTR")
+  .refine((c) => c === "XTR" || Boolean(env.STARS_RATES[c]), "currency is not supported");
 
 const publicUser = {
   id: users.id,
@@ -31,13 +39,20 @@ export const usersRouter = router({
     };
   }),
 
+  /** Any plan change (upgrade/downgrade) is not implemented yet: the Stars subscription flow is still an open decision. */
+  setPlan: authedProcedure
+    .input(z.object({ plan: z.enum(["free", "premium"]) }))
+    .mutation(() => {
+      throw new TRPCError({ code: "NOT_IMPLEMENTED", message: "Premium coming soon" });
+    }),
+
   updateMe: authedProcedure
     .input(
       z.object({
         bio: z.string().max(500).nullish(),
         autoAcceptFollows: z.boolean().optional(),
         notificationsEnabled: z.boolean().optional(),
-        defaultCurrency: currency.optional(),
+        defaultCurrency: supportedCurrency.optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -71,7 +86,9 @@ export const usersRouter = router({
       return {
         user: u,
         isMe: u.id === ctx.user.id,
-        followStatus: outgoing?.s ?? null, // viewer -> user
+        // viewer -> user. A rejected request is reported as "pending" so the
+        // client cannot reveal that a rejection happened (see follows.follow).
+        followStatus: outgoing?.s === "rejected" ? ("pending" as const) : outgoing?.s ?? null,
         followsMe: incoming?.s === "accepted",
         counts: { followers: followers?.n ?? 0, following: following?.n ?? 0, wishlists: lists?.n ?? 0 },
       };
@@ -85,7 +102,10 @@ export const usersRouter = router({
       return ctx.db
         .select(publicUser)
         .from(users)
-        .where(and(or(ilike(users.username, q), ilike(users.firstName, q)), sql`${users.id} <> ${ctx.user.id}`))
+        .where(and(
+          or(ilike(users.username, q), ilike(users.firstName, q)),
+          sql`${users.id} <> ${ctx.user.id}`,
+        ))
         .limit(input.limit);
     }),
 });

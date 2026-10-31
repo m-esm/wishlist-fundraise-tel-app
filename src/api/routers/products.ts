@@ -1,12 +1,17 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
-import { contributions, groupSessions, products } from "../../db/schema";
+import { contributions, follows, groupSessions, products, wishlists } from "../../db/schema";
 import { env } from "../../env";
 import { ALLOWED_IMAGE_TYPES, presignImageUpload } from "../../lib/storage";
 import { assertCanAddProduct } from "../../lib/entitlements";
 import { authedProcedure, router } from "../trpc";
-import { currency, httpUrl, id, money, ownedProduct, ownedWishlist, readableProduct } from "./_shared";
+import { badRequest, currency, httpUrl, id, money, ownedProduct, ownedWishlist, readableProduct } from "./_shared";
+
+/** Archived lists are read-only. */
+function assertWishlistOpen(w: { archivedAt: Date | null }) {
+  if (w.archivedAt) throw new TRPCError({ code: "CONFLICT", message: "wishlist is archived" });
+}
 
 const fields = {
   title: z.string().trim().min(1).max(200),
@@ -47,7 +52,7 @@ export const productsRouter = router({
   create: authedProcedure
     .input(z.object({ wishlistId: id, ...fields }))
     .mutation(async ({ ctx, input }) => {
-      await ownedWishlist(ctx.db, ctx.user.id, input.wishlistId);
+      assertWishlistOpen(await ownedWishlist(ctx.db, ctx.user.id, input.wishlistId));
       await assertCanAddProduct(ctx.db, ctx.user.id, input.wishlistId);
       if (input.currency !== "XTR" && !env.STARS_RATES[input.currency]) {
         throw new TRPCError({ code: "BAD_REQUEST", message: `currency ${input.currency} is not supported` });
@@ -66,7 +71,8 @@ export const productsRouter = router({
   update: authedProcedure
     .input(z.object({ productId: id, ...z.object(fields).partial().shape }))
     .mutation(async ({ ctx, input: { productId, ...patch } }) => {
-      const { product } = await ownedProduct(ctx.db, ctx.user.id, productId);
+      const { product, wishlist } = await ownedProduct(ctx.db, ctx.user.id, productId);
+      assertWishlistOpen(wishlist);
       if (patch.currency && patch.currency !== product.currency && product.fundedMinor > 0) {
         throw new TRPCError({ code: "CONFLICT", message: "currency is locked after the first contribution" });
       }
@@ -83,7 +89,8 @@ export const productsRouter = router({
   setStatus: authedProcedure
     .input(z.object({ productId: id, status: z.enum(["purchased", "archived", "active"]) }))
     .mutation(async ({ ctx, input }) => {
-      const { product } = await ownedProduct(ctx.db, ctx.user.id, input.productId);
+      const { product, wishlist } = await ownedProduct(ctx.db, ctx.user.id, input.productId);
+      assertWishlistOpen(wishlist);
       if (product.status === "archived" && input.status !== "archived") {
         await assertCanAddProduct(ctx.db, ctx.user.id, product.wishlistId);
       }
@@ -113,8 +120,13 @@ export const productsRouter = router({
   reorder: authedProcedure
     .input(z.object({ wishlistId: id, orderedIds: z.array(id).min(1).max(500) }))
     .mutation(async ({ ctx, input }) => {
-      await ownedWishlist(ctx.db, ctx.user.id, input.wishlistId);
+      assertWishlistOpen(await ownedWishlist(ctx.db, ctx.user.id, input.wishlistId));
       await ctx.db.transaction(async (tx) => {
+        const rows = await tx
+          .select({ id: products.id })
+          .from(products)
+          .where(and(eq(products.wishlistId, input.wishlistId), inArray(products.id, input.orderedIds)));
+        if (rows.length !== new Set(input.orderedIds).size) throw badRequest("unknown product id");
         for (const [i, pid] of input.orderedIds.entries()) {
           await tx.update(products).set({ position: i })
             .where(and(eq(products.id, pid), eq(products.wishlistId, input.wishlistId)));
@@ -128,13 +140,40 @@ export const productsRouter = router({
     .input(z.object({ contentType: z.enum(ALLOWED_IMAGE_TYPES), contentLength: z.number().int().positive().max(env.UPLOAD_MAX_BYTES) }))
     .mutation(({ ctx, input }) => presignImageUpload(ctx.user.id, input.contentType, input.contentLength)),
 
-  /** Recently funded items from people I follow — feed for the home tab. */
-  recentlyFundedFeed: authedProcedure.query(({ ctx }) =>
-    ctx.db.execute(sql`
-      select p.*, w.owner_id from products p
-      join wishlists w on w.id = p.wishlist_id
-      join follows f on f.followee_id = w.owner_id and f.follower_id = ${ctx.user.id} and f.status = 'accepted'
-      where p.status = 'funded' and w.archived_at is null
-      order by p.funded_at desc limit 30`),
-  ),
+  /**
+   * Recently funded items from people I follow, or from one user when
+   * `userId` is given (profile screen). Private lists are not listed unless
+   * the viewer owns them or is an accepted follower of the owner.
+   */
+  recentlyFundedFeed: authedProcedure
+    .input(z.object({ userId: id.optional() }).default({}))
+    .query(async ({ ctx, input }) => {
+      const ownerId = input.userId;
+      const where = and(
+        eq(products.status, "funded"),
+        isNull(wishlists.archivedAt),
+        ownerId
+          ? eq(wishlists.ownerId, ownerId)
+          : sql`exists (select 1 from ${follows} f where f.followee_id = ${wishlists.ownerId}
+                and f.follower_id = ${ctx.user.id} and f.status = 'accepted')`,
+        eq(wishlists.visibility, "public"),
+      );
+      return ctx.db
+        .select({
+          id: products.id,
+          wishlistId: products.wishlistId,
+          title: products.title,
+          imageUrl: products.imageUrl,
+          priceMinor: products.priceMinor,
+          fundedMinor: products.fundedMinor,
+          currency: products.currency,
+          fundedAt: products.fundedAt,
+          ownerId: wishlists.ownerId,
+        })
+        .from(products)
+        .innerJoin(wishlists, eq(wishlists.id, products.wishlistId))
+        .where(where)
+        .orderBy(desc(products.fundedAt))
+        .limit(30);
+    }),
 });

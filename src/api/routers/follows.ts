@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import { z } from "zod";
 import { follows, users } from "../../db/schema";
 import { respondToFollow } from "../../services/follows";
@@ -47,8 +47,16 @@ export const followsRouter = router({
     });
   }),
 
+  /**
+   * Withdraw my request or stop following. A rejected edge is kept: the owner
+   * already said no, and deleting it would let the same request be sent again.
+   */
   unfollow: authedProcedure.input(z.object({ userId: id })).mutation(async ({ ctx, input }) => {
-    await ctx.db.delete(follows).where(and(eq(follows.followerId, ctx.user.id), eq(follows.followeeId, input.userId)));
+    await ctx.db.delete(follows).where(and(
+      eq(follows.followerId, ctx.user.id),
+      eq(follows.followeeId, input.userId),
+      ne(follows.status, "rejected"),
+    ));
     return { ok: true };
   }),
 

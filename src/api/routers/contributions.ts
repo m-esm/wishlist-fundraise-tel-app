@@ -8,7 +8,7 @@ import { tg } from "../../lib/telegram";
 import { ContributionError, decideManual, invoicePayload } from "../../services/contributions";
 import { enqueue } from "../../services/outbox";
 import { authedProcedure, router } from "../trpc";
-import { id, money, notFound, page, readableProduct } from "./_shared";
+import { id, money, notFound, page, parseCursor, readableProduct } from "./_shared";
 
 const extras = {
   message: z.string().trim().max(280).nullish(),
@@ -22,18 +22,26 @@ async function contributable(db: Parameters<typeof readableProduct>[0], viewerId
   const row = await readableProduct(db, viewerId, productId).catch(async (e) => {
     // Group-session links let any member contribute to a public product they cannot otherwise browse.
     if (!sessionId) throw e;
-    const [r] = await db.select({ product: products, wishlist: wishlists }).from(products)
-      .innerJoin(wishlists, eq(wishlists.id, products.wishlistId)).where(eq(products.id, productId));
-    if (!r) throw e;
-    return r;
+    return publicProduct(db, productId);
   });
   if (row.wishlist.ownerId === viewerId) throw new TRPCError({ code: "BAD_REQUEST", message: "cannot contribute to your own wish" });
   if (row.product.status !== "active") throw new TRPCError({ code: "CONFLICT", message: "this wish is not collecting" });
+  if (row.product.currency !== STARS && !env.STARS_RATES[row.product.currency]) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `currency ${row.product.currency} is not supported` });
+  }
   if (sessionId) {
     const [s] = await db.select().from(groupSessions).where(eq(groupSessions.id, sessionId));
     if (!s || s.status !== "open" || s.productId !== productId) throw notFound("open group session");
   }
   return row;
+}
+
+/** Public lists are visible to any member of a group session, so the session link must not widen access. */
+async function publicProduct(db: Parameters<typeof readableProduct>[0], productId: string) {
+  const [r] = await db.select({ product: products, wishlist: wishlists }).from(products)
+    .innerJoin(wishlists, eq(wishlists.id, products.wishlistId)).where(eq(products.id, productId));
+  if (!r || r.wishlist.visibility !== "public" || r.wishlist.archivedAt) throw notFound("product");
+  return r;
 }
 
 const contributorView = {
@@ -144,8 +152,12 @@ export const contributionsRouter = router({
       eq(contributions.contributorId, ctx.user.id),
       inArray(contributions.status, ["pending", "awaiting_confirmation"]),
     )).returning();
-    if (!c) throw new ContributionError("contribution not found");
-    return c;
+    if (c) return c;
+    // Not cancellable: distinguish "not yours / no such row" from a settled state.
+    const [row] = await ctx.db.select({ contributorId: contributions.contributorId, status: contributions.status })
+      .from(contributions).where(eq(contributions.id, input.contributionId));
+    if (!row || row.contributorId !== ctx.user.id) throw new ContributionError("contribution not found");
+    throw new TRPCError({ code: "CONFLICT", message: `cannot cancel a ${row.status} contribution` });
   }),
 
   /**
@@ -158,12 +170,13 @@ export const contributionsRouter = router({
     .query(async ({ ctx, input }) => {
       const { wishlist } = await readableProduct(ctx.db, ctx.user.id, input.productId);
       const statuses = wishlist.ownerId === ctx.user.id ? ["confirmed", "awaiting_confirmation"] as const : ["confirmed"] as const;
+      const cursor = parseCursor(input.cursor);
       const rows = await ctx.db.select(contributorView).from(contributions)
         .innerJoin(users, eq(users.id, contributions.contributorId))
         .where(and(
           eq(contributions.productId, input.productId),
           inArray(contributions.status, [...statuses]),
-          input.cursor ? lt(contributions.createdAt, new Date(input.cursor)) : undefined,
+          cursor ? lt(contributions.createdAt, cursor) : undefined,
         ))
         .orderBy(desc(contributions.createdAt))
         .limit(input.limit + 1);
@@ -174,11 +187,12 @@ export const contributionsRouter = router({
 
   /** Contributions I made. */
   mine: authedProcedure.input(page).query(async ({ ctx, input }) => {
+    const cursor = parseCursor(input.cursor);
     const rows = await ctx.db.select({ c: contributions, productTitle: products.title }).from(contributions)
       .innerJoin(products, eq(products.id, contributions.productId))
       .where(and(
         eq(contributions.contributorId, ctx.user.id),
-        input.cursor ? lt(contributions.createdAt, new Date(input.cursor)) : undefined,
+        cursor ? lt(contributions.createdAt, cursor) : undefined,
       ))
       .orderBy(desc(contributions.createdAt))
       .limit(input.limit + 1);

@@ -75,15 +75,15 @@ export async function sendSessionInvoice(ctx: BotContext, s: GroupSession, stars
 }
 
 /** /paysupport is mandatory for bots that sell with Stars. */
-payments.command("paysupport", async (ctx) => {
+payments.chatType("private").command("paysupport", async (ctx) => {
   await ctx.reply(
-    "Payment problem? Describe it in one message (include the date and amount). " +
+    "Payment problem? Use /paysupport followed by the problem, date, and amount. " +
       "We reply within 48 hours. Refunds for Stars go back to your Telegram balance.",
   );
   if (env.SUPPORT_CHAT_ID && ctx.from) {
     await ctx.api.sendMessage(
       env.SUPPORT_CHAT_ID,
-      `/paysupport from ${ctx.from.username ? "@" + ctx.from.username : ctx.from.first_name} (tg id ${ctx.from.id})`,
+      `/paysupport from ${ctx.from.username ? "@" + ctx.from.username : ctx.from.first_name} (tg id ${ctx.from.id})\n${ctx.match.trim() || "No details supplied."}`,
     );
   }
 });
