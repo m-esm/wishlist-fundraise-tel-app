@@ -4,12 +4,22 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --production --frozen-lockfile
 
+FROM --platform=linux/amd64 oven/bun:1.3.11-slim AS client
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+COPY tsconfig.json ./
+COPY src ./src
+COPY client ./client
+RUN cd client && bun install --frozen-lockfile && bun run build
+
 FROM --platform=linux/amd64 oven/bun:1.3.11-slim
 WORKDIR /app
 ENV NODE_ENV=production HOME=/tmp TMPDIR=/tmp
 COPY --chown=1000:1000 --from=dependencies /app/node_modules ./node_modules
 COPY --chown=1000:1000 package.json bun.lock tsconfig.json bunfig.toml ./
 COPY --chown=1000:1000 src ./src
+COPY --chown=1000:1000 --from=client /app/client/dist ./client/dist
 USER 1000:1000
 EXPOSE 8080 8081
 CMD ["bun", "run", "start:api"]

@@ -1,2 +1,4 @@
 [test]
 preload = ["./src/test/setup.ts"]
+# PGlite compiles its WASM engine on the first query. That step takes about 3.5 s on a cold machine.
+timeout = 30000
