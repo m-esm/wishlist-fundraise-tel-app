@@ -17,6 +17,8 @@ node scripts/check-boundary.mjs
 VITE_API_URL=http://localhost:8080 npm run dev
 ```
 
+The runtime image builds `client/dist` in a Docker stage and the API serves it at `/`. The page loads `telegram-web-app.js` in `<head>`. `VITE_API_URL` can stay unset: the client then calls its own origin.
+
 Use `--include=dev` when `NODE_ENV=production`. It installs the TypeScript and Vite packages. Without it, `npm ci` installs the runtime packages only and the build stops at the `vite/client` types.
 
 `node scripts/check-boundary.mjs` builds each probe import against the real files under the repository-root `src/`. A probe passes only when the build fails with the gate's own diagnostic, so an unrelated build error cannot hide a leak. A control proves that `@trpc/server` still builds, because the client type imports that package.
