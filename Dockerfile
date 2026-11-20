@@ -6,12 +6,10 @@ RUN bun install --production --frozen-lockfile
 
 FROM --platform=linux/amd64 oven/bun:1.3.11-slim AS client
 WORKDIR /app
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
-COPY tsconfig.json ./
+COPY package.json bun.lock tsconfig.json ./
 COPY src ./src
 COPY client ./client
-RUN cd client && bun install --frozen-lockfile && bun run build
+RUN bun install --frozen-lockfile && cd client && bun install --frozen-lockfile && bun run build
 
 FROM --platform=linux/amd64 oven/bun:1.3.11-slim
 WORKDIR /app
